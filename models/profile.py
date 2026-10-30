@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Literal, Optional, List
 
 
 class NotificationPrefs(BaseModel):
@@ -30,6 +30,12 @@ class FeatureFlags(BaseModel):
     supplement_tracking: bool = True
 
 
+class Units(BaseModel):
+    """How weights and heights are shown. Storage is always kg and cm."""
+    weight: Literal["kg", "lb"] = "kg"
+    height: Literal["cm", "ftin"] = "cm"
+
+
 class ProfileCreate(BaseModel):
     height_cm: float
     weight_kg: float
@@ -49,6 +55,7 @@ class ProfileCreate(BaseModel):
     diet_pref: Optional[str] = None  # "veg" | "egg" | "nonveg"
     target_weight_kg: Optional[float] = None
     feature_flags: FeatureFlags = Field(default_factory=FeatureFlags)
+    units: Units = Field(default_factory=Units)
 
 
 class ProfilePatch(BaseModel):
@@ -86,6 +93,7 @@ class ProfilePatch(BaseModel):
     target_weight_kg: Optional[float] = None
     disabled_meal_slots: Optional[List[str]] = None  # e.g. ["breakfast"]
     feature_flags: Optional[FeatureFlags] = None
+    units: Optional[Units] = None  # replaced as a whole, send both fields
 
 
 class TDEEResult(BaseModel):

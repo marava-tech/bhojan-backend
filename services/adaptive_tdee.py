@@ -19,6 +19,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from services.units import fmt_weight
+
 
 # Energy equivalent of 1 kg body mass change (kcal).
 _KCAL_PER_KG = 7700.0
@@ -179,7 +181,7 @@ def build_suggestion(
         # Weight has stalled — nudge by −80 kcal to restart deficit
         new_goal = current_goal - 80
         msg = (
-            f"Your weight has been flat for 3+ weeks (< {_PLATEAU_KG_PER_WEEK} kg/week movement). "
+            f"Your weight has been flat for 3+ weeks (< {fmt_weight(_PLATEAU_KG_PER_WEEK, profile, 2)}/week movement). "
             f"Drop your daily target by 80 kcal to reignite the deficit?"
         )
         return {
@@ -206,7 +208,7 @@ def build_suggestion(
     msg = (
         f"Based on {insight['logged_days']} logged days and {insight['weight_entries']} weigh-ins, "
         f"your real TDEE looks like ~{real_tdee} kcal "
-        f"(you're {kg_dir} {abs(kg_per_week):.2f} kg/week). "
+        f"(you're {kg_dir} {fmt_weight(abs(kg_per_week), profile, 2)}/week). "
         f"Set your target {abs(round(delta))} kcal {direction}, to {round(target)} kcal?"
     )
     return {
