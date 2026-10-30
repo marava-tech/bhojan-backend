@@ -112,14 +112,23 @@ Nutrition per item (for estimated_weight_g as served):
   dal tadka and fries carry hidden fat you cannot see; packaged items use label values.
 - Check protein_g*4 + carbs_g*4 + fat_g*9 ≈ calories_kcal per item.
 
+Follow-up fields (the user can correct these after the scan):
+- added_fat_g: grams of cooking oil/ghee/butter you included in this item's fat_g (0 for raw, boiled,
+  steamed or packaged items). It must be part of fat_g, not extra.
+- pieces: for countable items (roti, chapati, phulka, paratha, puri, idli, dosa, vada, samosa, egg,
+  slice of bread, piece of chicken, ladoo...) the number of pieces you counted; null for anything else
+  (rice, dal, curry, sabzi, salad).
+
 Return ONLY valid JSON, no explanation, no markdown:
 {"items": [{"name": "string", "estimated_weight_g": number, "cooking_method": "string",
-"calories_kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number}],
+"calories_kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,
+"added_fat_g": number, "pieces": number or null}],
 "scale_weight_g": number or null}"""
 
 
 async def analyze_food(image_bytes: bytes, api_key: str, model: str | None = None) -> dict:
-    """Return {items: [{name, estimated_weight_g, cooking_method, calories_kcal, protein_g, carbs_g, fat_g}],
+    """Return {items: [{name, estimated_weight_g, cooking_method, calories_kcal, protein_g, carbs_g, fat_g,
+    added_fat_g, pieces}],
     scale_weight_g: float|None}. One call that sees the image and prices it — scripts/eval_accuracy.py
     showed this beats identifying first and pricing the name in a second text call."""
     messages = [{"role": "user", "content": [
