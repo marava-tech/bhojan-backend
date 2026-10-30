@@ -83,6 +83,8 @@ async def ensure_indexes():
     # OTP expiry — MongoDB auto-deletes documents after expires_at
     await _create_index(db.otp_requests, "expires_at", expireAfterSeconds=0, background=True)
     await _create_index(db.users, "email", unique=True, sparse=True, background=True)
+    await _create_index(db.data_exports, [("user_id", 1), ("requested_at", -1)], background=True)
+    await _create_index(db.data_exports, [("status", 1), ("run_at", 1)], background=True)
     logger.info("MongoDB indexes ensured")
     # AI scan quota — one doc per user per day, auto-deleted after expires_at
     await _create_index(db.ai_usage, [("user_id", 1), ("date", 1)], background=True, unique=True)
