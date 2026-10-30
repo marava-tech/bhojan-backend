@@ -1,6 +1,6 @@
 """Adaptive TDEE insight — GET /api/tdee/insight, POST /api/tdee/apply."""
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -16,21 +16,23 @@ router = APIRouter(prefix="/api/tdee", tags=["tdee"])
 _WINDOW_DAYS = 21
 
 
-async def _gather_data(db, user_id: str) -> tuple[dict, dict, list]:
-    """Pull intake + weight data for the insight window."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=_WINDOW_DAYS)).date().isoformat()
+async def _gather_data(db, user_id: str, end: date | None = None) -> tuple[dict, dict, list]:
+    """Pull intake + weight data for the insight window ending at `end` (default today)."""
+    end = end or datetime.now(timezone.utc).date()
+    cutoff = (end - timedelta(days=_WINDOW_DAYS)).isoformat()
+    until = end.isoformat()
 
     # Aggregate daily kcal from food_logs
     pipeline = [
-        {"$match": {"user_id": user_id, "date": {"$gte": cutoff}}},
-        {"$group": {"_id": "$date", "total_kcal": {"$sum": "$total_kcal"}}},
+        {"$match": {"user_id": user_id, "date": {"$gte": cutoff, "$lte": until}}},
+        {"$group": {"_id": "$date", "total_kcal": {"$sum": "$totals.calories_kcal"}}},
     ]
     intake_docs = await db.food_logs.aggregate(pipeline).to_list(None)
     intake_by_date = {d["_id"]: d["total_kcal"] for d in intake_docs}
 
     # Weight entries
     weight_docs = await db.weight_photos.find(
-        {"user_id": user_id, "date": {"$gte": cutoff}},
+        {"user_id": user_id, "date": {"$gte": cutoff, "$lte": until}},
         {"date": 1, "weight_kg": 1},
     ).to_list(None)
     weight_by_date = {
@@ -41,15 +43,16 @@ async def _gather_data(db, user_id: str) -> tuple[dict, dict, list]:
 
     # Last 4 ISO weeks for plateau detection
     week_pipeline = [
-        {"$match": {"user_id": user_id}},
+        {"$match": {"user_id": user_id, "date": {"$lte": until}}},
         {"$group": {
             "_id": {"$dateToString": {"format": "%G-W%V", "date": {"$dateFromString": {"dateString": "$date"}}}},
             "avg_weight": {"$avg": "$weight_kg"},
         }},
-        {"$sort": {"_id": 1}},
+        {"$sort": {"_id": -1}},
         {"$limit": 4},
     ]
-    week_docs = await db.weight_photos.aggregate(week_pipeline).to_list(None)
+    # Newest 4 weeks, flipped back to oldest-first for detect_plateau
+    week_docs = (await db.weight_photos.aggregate(week_pipeline).to_list(None))[::-1]
     weekly_avgs = [{"week_start": d["_id"], "avg_weight": d["avg_weight"]} for d in week_docs]
 
     return intake_by_date, weight_by_date, weekly_avgs

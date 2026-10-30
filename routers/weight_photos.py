@@ -62,7 +62,10 @@ async def upload_weight_photo(
 
                 # Restore user-overridden goal fields so a new weight log doesn't wipe them.
                 overrides: set[str] = set(profile.get("goal_overrides") or [])
-                for field in ("goal_kcal", "protein_g", "carbs_g", "fat_g"):
+                # An applied adaptive-TDEE goal is measured, not formula — keep it too.
+                if profile.get("tdee_source") == "adaptive":
+                    overrides |= {"goal_kcal", "tdee_kcal"}
+                for field in ("goal_kcal", "tdee_kcal", "protein_g", "carbs_g", "fat_g"):
                     if field in overrides and field in profile:
                         tdee[field] = profile[field]
 

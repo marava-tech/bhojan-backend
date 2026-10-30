@@ -26,6 +26,10 @@ _KCAL_PER_KG = 7700.0
 # Plateau threshold: weight movement < this (kg/week) for 3+ consecutive weeks
 _PLATEAU_KG_PER_WEEK = 0.10
 
+# Cut pace for the adaptive target: 0.5% bodyweight/week, never below the floor
+_CUT_PCT_PER_WEEK = 0.005
+_MIN_GOAL_KCAL = 1200
+
 # Minimum calorie differential before suggesting a target change
 _MIN_SUGGESTION_DELTA = 50  # kcal
 
@@ -169,7 +173,6 @@ def build_suggestion(
     if confidence == "insufficient" or real_tdee is None:
         return {"type": "none", "message": "Not enough data yet.", "suggested_goal_kcal": None, "delta_kcal": 0}
 
-    delta = real_tdee - current_goal
     kg_per_week = insight.get("kg_per_week", 0.0) or 0.0
 
     if is_plateau and abs(kg_per_week) < _PLATEAU_KG_PER_WEEK:
@@ -186,6 +189,15 @@ def build_suggestion(
             "delta_kcal": -80,
         }
 
+    # real_tdee is maintenance. Keep the user's intent: a goal below their formula TDEE means
+    # they're cutting → maintenance − 0.5% bodyweight/week; otherwise keep their recomp/bulk offset.
+    formula_tdee = profile.get("tdee_kcal") or current_goal
+    weight_kg = profile.get("weight_kg") or 0
+    if current_goal < formula_tdee:
+        target = max(real_tdee - _CUT_PCT_PER_WEEK * weight_kg * _KCAL_PER_KG / 7, _MIN_GOAL_KCAL)
+    else:
+        target = real_tdee + (current_goal - formula_tdee)
+    delta = target - current_goal
     if abs(delta) < _MIN_SUGGESTION_DELTA:
         return {"type": "none", "message": "Your targets are on track.", "suggested_goal_kcal": None, "delta_kcal": round(delta)}
 
@@ -195,12 +207,11 @@ def build_suggestion(
         f"Based on {insight['logged_days']} logged days and {insight['weight_entries']} weigh-ins, "
         f"your real TDEE looks like ~{real_tdee} kcal "
         f"(you're {kg_dir} {abs(kg_per_week):.2f} kg/week). "
-        f"Your current target of {current_goal} kcal is {abs(round(delta))} kcal {direction} — "
-        f"apply the data-derived target?"
+        f"Set your target {abs(round(delta))} kcal {direction}, to {round(target)} kcal?"
     )
     return {
         "type": "adopt_tdee",
         "message": msg,
-        "suggested_goal_kcal": round(real_tdee),
+        "suggested_goal_kcal": round(target),
         "delta_kcal": round(delta),
     }
