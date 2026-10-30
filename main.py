@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from database import get_db, ensure_indexes
-from services import fcm as fcm_svc
+from services import fcm as fcm_svc, data_export
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -131,6 +131,8 @@ async def lifespan(app: FastAPI):
 
     # Daily at 15:00 UTC (20:30 IST) — EOD reconcile nudge if < 2 meals logged
     scheduler.add_job(_end_of_day_reconcile, "cron", hour=15, minute=0)
+    # Every 5 min — build and email data exports that are due
+    scheduler.add_job(lambda: data_export.process_due(get_db()), "interval", minutes=5, max_instances=1, coalesce=True)
     scheduler.start()
     logger.info("Fitness OS backend started")
     yield

@@ -43,10 +43,10 @@ async def send_otp(to_email: str, otp: str) -> None:
     logger.info("OTP email sent to %s", to_email)
 
 
-async def send_export(to_email: str, files: dict[str, bytes]) -> None:
-    """Email the user a copy of their data. `files` maps filename -> bytes."""
+async def send_export(to_email: str, archive: bytes, filename: str) -> None:
+    """Email the user their data export as a ZIP attachment."""
     if not _enabled:
-        logger.info("Email disabled — data export for %s: %s", to_email, list(files))
+        logger.info("Email disabled — data export for %s: %s (%d bytes)", to_email, filename, len(archive))
         return
 
     msg = EmailMessage()
@@ -54,14 +54,13 @@ async def send_export(to_email: str, files: dict[str, bytes]) -> None:
     msg["From"] = formataddr(("Bhojan", _from))
     msg["To"] = to_email
     msg.set_content(
-        "Attached is a copy of the data in your Bhojan account: your profile, food diary, "
-        "supplements, sleep and weight logs.\n\n"
-        "food_logs.csv opens in any spreadsheet app. bhojan_data.json has everything.\n"
-        "If you didn't request this, you can ignore this email.\n"
+        "Your Bhojan data is attached as a ZIP file.\n\n"
+        "Inside: data.json (everything), food_log_items.csv and one spreadsheet per section, "
+        "plus your photos. Open README.txt first.\n\n"
+        "You can request a new export once a week. If you didn't request this, you can ignore this "
+        "email and consider changing your sign-in email's password.\n"
     )
-    for name, data in files.items():
-        maintype, subtype = ("text", "csv") if name.endswith(".csv") else ("application", "json")
-        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
+    msg.add_attachment(archive, maintype="application", subtype="zip", filename=filename)
 
     await aiosmtplib.send(
         msg, hostname=_host, port=_port, username=_username, password=_password, start_tls=True,
