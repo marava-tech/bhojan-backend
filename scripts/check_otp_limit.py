@@ -8,7 +8,7 @@ os.environ.setdefault("MONGODB_URI", "mongodb://localhost:1/x")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import HTTPException
 from routers import auth_router as a
-from models.user import VerifyOtpRequest
+from models.user import SendOtpRequest, VerifyOtpRequest
 
 
 class Coll:
@@ -43,7 +43,12 @@ async def main():
     assert "123456" not in str(db.otp_requests.docs)  # stored hashed
     for _ in range(5): assert await verify("000001") == 400
     assert await verify("123456") == 429, "6th guess must be refused even if correct"
-    assert not db.otp_requests.docs, "code is burned after the cap"
+    assert "otp_hash" not in db.otp_requests.docs[0], "code is burned after the cap"
+    assert await verify("123456") == 429, "still locked"
+    try: await a.send_otp(SendOtpRequest(email="u@x.com")); assert False, "send-otp must be locked too"
+    except HTTPException as e: assert e.status_code == 429
+    db.otp_requests.docs[0]["locked_until"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert await verify("123456") == 400, "lockout over: no live code, not 429"
     seed(); t = await verify("123456")
     assert t.is_new_user and not t.has_profile
     seed(); await db.user_profile.insert_one({"user_id": "1"}); t = await verify("123456")

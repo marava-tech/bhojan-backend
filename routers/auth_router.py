@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 _OTP_TTL_MINUTES = 5
 _OTP_MAX_ATTEMPTS = 5
+_OTP_LOCKOUT_MINUTES = 15
 
 # Play Store reviewer login — accepts a fixed OTP so review can proceed without
 # needing to receive a real email. No other account gets this bypass.
@@ -27,6 +28,21 @@ _REVIEWER_OTP = "000000"
 
 def _generate_otp() -> str:
     return "".join(random.SystemRandom().choices(string.digits, k=6))
+
+
+def _locked_for(record: dict | None) -> int:
+    """Minutes left on this email's lockout, or 0."""
+    until = (record or {}).get("locked_until")
+    if not until:
+        return 0
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    left = (until - datetime.now(timezone.utc)).total_seconds()
+    return int(left // 60) + 1 if left > 0 else 0
+
+
+def _lockout_error(minutes: int) -> HTTPException:
+    return HTTPException(status_code=429, detail=f"Too many wrong codes — try again in {minutes} minutes")
 
 
 def _hash_otp(email: str, otp: str) -> str:
@@ -47,6 +63,8 @@ async def send_otp(body: SendOtpRequest):
         return {"message": "OTP sent"}
 
     existing = await db.otp_requests.find_one({"email": email})
+    if mins := _locked_for(existing):
+        raise _lockout_error(mins)
     if existing:
         created_at = existing["created_at"]
         if created_at.tzinfo is None:
@@ -87,12 +105,17 @@ async def verify_otp(body: VerifyOtpRequest):
         record = await db.otp_requests.find_one_and_update(
             {"email": email}, {"$inc": {"attempts": 1}}, return_document=ReturnDocument.AFTER
         )
+        if mins := _locked_for(record):
+            raise _lockout_error(mins)
         if not record or "otp_hash" not in record:
             raise HTTPException(status_code=400, detail="No OTP found — please request a new one")
 
         if record["attempts"] > _OTP_MAX_ATTEMPTS:
+            # Keep a stub row so send-otp refuses too; the expires_at TTL index clears it afterwards.
+            until = datetime.now(timezone.utc) + timedelta(minutes=_OTP_LOCKOUT_MINUTES)
             await db.otp_requests.delete_many({"email": email})
-            raise HTTPException(status_code=429, detail="Too many wrong codes — please request a new one")
+            await db.otp_requests.insert_one({"email": email, "locked_until": until, "expires_at": until, "created_at": datetime.now(timezone.utc)})
+            raise _lockout_error(_OTP_LOCKOUT_MINUTES)
 
         expires_at = record["expires_at"]
         if expires_at.tzinfo is None:
