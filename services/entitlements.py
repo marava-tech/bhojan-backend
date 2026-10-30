@@ -10,7 +10,6 @@ from fastapi import Depends, HTTPException
 
 from auth import get_current_user
 from database import get_db
-from services import ai_quota
 
 ENTITLEMENT = os.environ.get("REVENUECAT_ENTITLEMENT", "premium")
 
@@ -62,12 +61,8 @@ async def apply_event(db, event: dict) -> bool:
 
 
 async def require_premium(user_id: str = Depends(get_current_user)) -> None:
-    """Dependency for premium-only endpoints. Users paying for their own AI key are exempt."""
-    db = get_db()
-    if await is_premium(db, user_id):
-        return
-    profile = await db.user_profile.find_one({"user_id": user_id})
-    if ai_quota.has_own_key(profile):
+    """Dependency for premium-only endpoints."""
+    if await is_premium(get_db(), user_id):
         return
     raise HTTPException(403, detail={
         "code": "premium_required",

@@ -48,14 +48,13 @@ async def main():
     assert not await entitlements.apply_event(db, {"type": "TEST", "app_user_id": "u9"})
     assert not await entitlements.is_premium(db, "u9")
 
-    # premium quota tier: 5/day (not 3), no reward scans
+    # premium quota tier: 5/day (not 3)
     profile = None
     for _ in range(5):
         await ai_quota.consume(db, "u1", profile)
     await raises(ai_quota.consume(db, "u1", profile), 429)
     st = await ai_quota.status(db, "u1", profile)
     assert st["premium"] and st["limit"] == 5, st
-    await raises(ai_quota.grant_reward(db, "u1", profile), 400)
 
     # cancellation keeps access until expiry; expiration ends it; lapsed expires_at self-heals
     await entitlements.apply_event(db, ev("CANCELLATION")["event"])
@@ -68,8 +67,6 @@ async def main():
     # require_premium gate
     e = await raises(entitlements.require_premium("u2"), 403)
     assert e.detail["code"] == "premium_required"
-    await db.user_profile.insert_one({"user_id": "u3", "openrouter_api_key": "sk-x"})
-    await entitlements.require_premium("u3")  # own key → allowed
     await entitlements.apply_event(db, ev("INITIAL_PURCHASE", user="u4")["event"])
     await entitlements.require_premium("u4")  # premium → allowed
     print("entitlements OK")

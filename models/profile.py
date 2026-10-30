@@ -45,7 +45,6 @@ class ProfileCreate(BaseModel):
     gym_days: Optional[List[int]] = None  # 0=Mon … 6=Sun
     if_enabled: bool = False
     subtract_bowl_weight: bool = False
-    openrouter_api_key: Optional[str] = None
     feature_flags: FeatureFlags = Field(default_factory=FeatureFlags)
 
 
@@ -79,7 +78,6 @@ class ProfilePatch(BaseModel):
     rest_fat_g: Optional[int] = None
     if_enabled: Optional[bool] = None
     subtract_bowl_weight: Optional[bool] = None
-    openrouter_api_key: Optional[str] = None
     disabled_meal_slots: Optional[List[str]] = None  # e.g. ["breakfast"]
     feature_flags: Optional[FeatureFlags] = None
 
