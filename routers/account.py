@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from auth import get_current_user
 from database import get_db
+from services import minio_client
 from services.email_service import send_export
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,10 @@ _USER_COLLECTIONS = (
     "sleep_logs", "weight_photos", "body_photos", "body_photo_comparisons", "gym_sessions",
     "if_logs", "daily_checkins", "ai_usage", "food_corrections", "weekly_insights",
     "scan_results", "goal_history", "entitlements",
+)
+# Collections whose docs hold uploaded image URLs (image_url, or photo_url on the profile).
+_IMAGE_COLLECTIONS = (
+    "user_profile", "food_logs", "saved_foods", "saved_meals", "weight_photos", "body_photos", "gym_sessions", "scan_results",
 )
 # Collections included in the emailed export (the data the user typed or scanned in).
 _EXPORT_COLLECTIONS = (
@@ -97,8 +102,15 @@ async def delete_account(body: DeleteAccount, user_id: str = Depends(get_current
     if body.email.strip().lower() != (user.get("email") or "").lower():
         raise HTTPException(400, "Email doesn't match this account")
 
+    # Collect uploaded image URLs before the docs go. Extra "image_url" holders (saved foods, scans) point at the same files.
+    urls = set()
+    for name in _IMAGE_COLLECTIONS:
+        async for d in db[name].find({"user_id": user_id}, {"image_url": 1, "photo_url": 1}):
+            urls.update(u for u in (d.get("image_url"), d.get("photo_url")) if u)
     for name in _USER_COLLECTIONS:
         await db[name].delete_many({"user_id": user_id})
     await db.otp_requests.delete_many({"email": user["email"]})
     await db.users.delete_one({"_id": user["_id"]})
+    for url in urls:
+        await minio_client.delete_image(url)
     logger.info("Account %s deleted", user_id)
