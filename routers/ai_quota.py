@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 
 from auth import get_current_user
 from database import get_db
-from services import ai_quota
+from services import ai_quota, limits
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -21,3 +21,11 @@ async def claim_reward(user_id: str = Depends(get_current_user)):
     db = get_db()
     profile = await db.user_profile.find_one({"user_id": user_id})
     return await ai_quota.grant_reward(db, user_id, profile)
+
+
+@router.get("/limits")
+async def get_limits(user_id: str = Depends(get_current_user)):
+    """Free vs Premium caps and current usage for AI comparisons, AI insights and photo storage."""
+    db = get_db()
+    profile = await db.user_profile.find_one({"user_id": user_id})
+    return await limits.status(db, user_id, profile)
