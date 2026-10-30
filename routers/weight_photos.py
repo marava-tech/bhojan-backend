@@ -11,6 +11,7 @@ from services import minio_client
 from services.tdee import calculate_tdee
 from services.fcm import send_notification
 from services.goal_history import snapshot_goal_history
+from services.units import fmt_weight
 from utils import validate_image_upload, require_feature_enabled
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ async def upload_weight_photo(
                         await send_notification(
                             profile["fcm_token"],
                             "Daily goal updated",
-                            f"New weight {weight_kg}kg → {tdee['goal_kcal']} kcal/day",
+                            f"New weight {fmt_weight(weight_kg, profile)} → {tdee['goal_kcal']} kcal/day",
                         )
                     except Exception as e:
                         logger.error("Failed to send weight update FCM: %s", e)
