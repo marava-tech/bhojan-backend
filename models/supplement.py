@@ -38,3 +38,10 @@ class SupplementLogCreate(BaseModel):
     supplement_id: str
     date: str   # YYYY-MM-DD
     units_taken: float = 1.0
+
+
+class SupplementLogSet(BaseModel):
+    supplement_id: str
+    date: str   # YYYY-MM-DD
+    taken: bool = True
+    units_taken: float = 1.0
