@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 
 from auth import get_current_user
 from database import get_db
-from services import minio_client
+from services import limits, minio_client
 from services.tdee import calculate_tdee
 from services.fcm import send_notification
 from services.goal_history import snapshot_goal_history
@@ -35,6 +35,7 @@ async def upload_weight_photo(
     image_url: Optional[str] = None
 
     if photo and photo.filename:
+        await limits.check_photo_upload(db, user_id, profile)
         image_bytes = await photo.read()
         validate_image_upload(image_bytes, photo.filename, photo.content_type)
         filename = f"{uuid.uuid4()}.jpg"

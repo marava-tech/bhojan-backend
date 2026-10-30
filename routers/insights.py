@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth import get_current_user
 from database import get_db
 from routers.summary import _week_dates
-from services import ai_quota, entitlements, gemini as gemini_svc
+from services import ai_quota, limits, gemini as gemini_svc
 from services import weekly_insights as wi
 from services.goal_history import today_for_user
 from utils import get_openrouter_key
@@ -48,7 +48,6 @@ def _clean(raw: dict) -> dict:
 async def weekly_insights(
     week: str | None = None,
     user_id: str = Depends(get_current_user),
-    _premium: None = Depends(entitlements.require_premium),
 ):
     """week format YYYY-Www (e.g. 2026-W38); defaults to the current week in the user's timezone."""
     db = get_db()
@@ -84,9 +83,21 @@ async def weekly_insights(
     api_key = get_openrouter_key(profile)
     if not api_key:
         raise HTTPException(402, "AI is not configured")
+    # Cached reads above are free; only a fresh AI generation takes one of the month's insights.
+    try:
+        await limits.consume(db, user_id, profile, "weekly_insights")
+    except HTTPException:
+        if cached:  # out of generations: an older read of this week beats a dead end
+            return {**base, "status": "ok", "stats": cached["stats"], "insights": cached["insights"],
+                    "generated_at": cached["generated_at"].isoformat()}
+        raise
     try:
         insights = _clean(await gemini_svc.weekly_insights(stats, api_key=api_key))
-    except (ValueError, KeyError) as e:
+    except Exception as e:
+        await limits.refund(db, user_id, profile, "weekly_insights")
+        if not isinstance(e, (ValueError, KeyError)):
+            raise
+
         logger.error("Weekly insights parse failure for %s: %s", user_id, e)
         if cached:  # stale insights beat an error
             return {**base, "status": "ok", "stats": cached["stats"], "insights": cached["insights"],

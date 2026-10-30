@@ -11,7 +11,7 @@ from auth import get_current_user
 from database import get_db
 from services import gemini as gemini_svc
 from services import minio_client
-from services import entitlements
+from services import limits
 from utils import validate_image_upload, get_openrouter_key, require_feature_enabled
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ async def upload_body_photo(
     db = get_db()
     profile = await db.user_profile.find_one({"user_id": user_id})
     require_feature_enabled(profile, "progress_photos", "Progress photos")
+    await limits.check_photo_upload(db, user_id, profile)
 
     image_bytes = await photo.read()
     validate_image_upload(image_bytes, photo.filename or "", photo.content_type)
@@ -64,7 +65,7 @@ class CompareRequest(BaseModel):
 async def compare_body_photos(
     req: CompareRequest,
     user_id: str = Depends(get_current_user),
-    _premium: None = Depends(entitlements.require_premium),
+    _limit: None = Depends(limits.gate("photo_compare")),
 ):
     """Compare 2–3 body photos using AI visual progression analysis."""
     if len(req.photo_ids) < 2 or len(req.photo_ids) > 3:
