@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
 
@@ -37,11 +37,11 @@ class SupplementPatch(BaseModel):
 class SupplementLogCreate(BaseModel):
     supplement_id: str
     date: str   # YYYY-MM-DD
-    units_taken: float = 1.0
+    units_taken: float = Field(1.0, gt=0, le=20)
 
 
 class SupplementLogSet(BaseModel):
     supplement_id: str
     date: str   # YYYY-MM-DD
     taken: bool = True
-    units_taken: float = 1.0
+    units_taken: float = Field(1.0, ge=0, le=20)  # servings (e.g. 2 scoops); 0 = not taken
