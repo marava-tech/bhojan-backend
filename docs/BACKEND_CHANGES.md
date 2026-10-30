@@ -6,40 +6,30 @@ The new app should be built against the API *after* these changes, not the curre
 
 ## P0 — accuracy
 
-1. **Indian dish database (IFCT 2017 + INDB).**
-   - Load per-100 g values for common Indian dishes into a `foods` collection, with aliases (Hindi,
-     Telugu and English spellings: "chapati/roti/phulka") and household units
-     (katori ≈ 150 g, roti ≈ 40 g, idli ≈ 40 g, dosa ≈ 80 g, tbsp, tsp).
-   - Check the INDB licence before importing; IFCT 2017 is published by NIN.
-   - `GET /api/food/search?q=` → fuzzy match on name + aliases, returns per_100g and units.
-2. **Ground the scan in that database.**
-   - After `analyze_food`, match each item's name to a DB dish. If matched, recompute macros as
-     DB per-gram × the model's grams, plus the model's `added_fat_g` oil.
-   - Keep the model's own macros when there's no match.
-   - Gate with `scripts/eval_accuracy.py`: it must beat the current single call (≈103–109 kcal MAE on
-     Nutrition5k) and the weighed Indian set (item 6).
-3. **Replace `/estimate-item`'s old chain.** It still uses OpenFoodFacts fuzzy search, then a text-only
-   LLM call. That benchmarked at 163 kcal MAE, against ~105 for the scan. Point it at the dish DB, with
-   the LLM only as fallback. Today the app calls it when the user renames an item, changes its cooking
-   method, or adds an item by hand.
-4. **Cooking-method change as maths, not a re-price.** The scan now returns `added_fat_g`, so a change
-   like fried → steamed should only scale the oil part, the same way home/restaurant and the oil
-   less/normal/more follow-up already work in the app. Move these factors server-side so all clients
-   agree: restaurant 1.5×, oil less 0.5×, more 1.5×.
-5. **Scale-first logging.**
-   - `POST /api/food/analyze` already reads `scale_weight_g` from a visible scale.
-   - Accept an optional `net_weight_g` form field (weight typed in, or scale minus tare). When given,
-     scale the items to that total so weight is exact and only density comes from the model.
-6. **Weighed Indian eval set.**
-   - Format: `images/` + `truth.jsonl` (same as n5k), built from ~20 of the owner's weighed home meals.
-   - Pick the production model from that set, not just Nutrition5k (US cafeteria food).
-   - Candidates and n5k scores so far: gemini-2.5-flash 103–109 kcal MAE at $0.51/1k scans,
-     gemini-4-argon 98.5, gpt-6.1-terra 96.
-7. **Accuracy metric: % of scans edited.**
-   - `_capture_corrections` needs `ai_original` on saved items, but the app never sends it, so
-     correction learning and `_personalize` are effectively dead.
-   - Either the new app sends `ai_original`, or `/analyze` stores its raw output keyed by
-     `image_url` and `/logs` diffs against it server-side (simpler; preferred).
+1. ~~**Indian dish database (INDB).**~~ **Rejected after testing (2026-10-30).**
+   - INDB has no yield factor: "per 100 g" is per 100 g of raw ingredients, not of the cooked dish.
+     The paper lists yield correction as future work.
+   - Spot checks are off by 30–50% both ways: poha 294 kcal/100 g (cooked is ~130–180), plain dosa
+     381 (~165–210), roti 202 (~260–300).
+   - Fried recipes count all the frying oil as eaten: samosa 577, besan kadhi with pakodies 403.
+   - The repo has no licence file.
+   - Name matching against real scan names covered only ~9% of items at a safe threshold.
+   - Verdict: grounding scans in it would make numbers worse. A usable Indian DB needs cooked-weight
+     values (lab-measured, or recipes with yield factors). Revisit only with such a source; the weighed
+     eval set (item 6) is the gate.
+2. ~~Ground the scan in that database.~~ Dropped with item 1.
+3. **`/estimate-item` still uses OpenFoodFacts fuzzy search, then an LLM.** It's open until there's a
+   better source. Item 4 removes most of its callers.
+4. **Cooking-method change as maths.** Client-side in the new app: scale only `added_fat_g`, like the
+   oil follow-up (restaurant 1.5×, less 0.5×, more 1.5×). No backend change needed.
+5. ✅ **Scale-first.** `POST /api/food/analyze` takes `net_weight_g` (scale minus tare); items are scaled
+   to that total.
+6. **Weighed Indian eval set.** Still needs ~20 of the owner's weighed meals. It picks the production model.
+7. ✅ **Accuracy metric + correction learning.**
+   - `/analyze` stores its raw result in `scan_results` (30-day TTL).
+   - `/logs` attaches it as `ai_original` per item (scaled to the saved weight), which revives
+     `_capture_corrections`, and saves `ai_kcal` on the log.
+   - % of scans edited = logs where `|totals.calories_kcal − ai_kcal| / ai_kcal > 5%`.
 
 ## Remove (decided in the redesign brief: remove, not hide)
 
@@ -63,27 +53,29 @@ The new app should be built against the API *after* these changes, not the curre
 12. **Health Connect sync** (`routers/health_sync.py`): only keep it if the new app still writes
     nutrition to Health Connect.
 
+**Not done yet, on purpose:** the Play Store app still calls these endpoints. Remove them in the same
+release as the v3 app, not before. (Item 11 is being done on `feat/free-and-premium-only`.)
+
 Migration: data-only fields can stay in Mongo, but stop reading them. Don't drop collections without
 a backup check (nightly backup at 03:30 UTC).
 
 ## Add (to serve the redesign)
 
-13. **One logging streak.** `GET /api/streaks` → `{current, best}` for food-logging days only.
+13. ✅ **One logging streak.** Already there: `GET /api/streaks` → `food_logging: {current, best}`.
 14. **Slim check-in.** `/api/daily-checkin` → weight + sleep (+ optional water) only, plus supplements
     when supplement tracking is on. It currently also carries gym and IF.
-15. **Demo scan before signup.** An unauthenticated `POST /api/food/analyze-demo`:
-    - Rate-limited per IP/device (e.g. 3/day).
+15. ✅ **Demo scan before signup.** `POST /api/food/analyze-demo`, no auth:
+    - 3 per IP per day, 500 per day in total (in memory, resets on restart).
     - No MinIO upload, no log write.
     - Same response shape as `/analyze`.
-16. **Today in one call.** `GET /api/summary/today?date=`: totals, goal remaining, meals by slot,
-    weight/sleep/supplement status. The new Today tab needs one request, not 5.
-17. **Before/after share card.** `POST /api/body-photos/compare` exists; add a server-rendered,
-    watermarked image (`GET /api/body-photos/compare/{id}/card.jpg`) for WhatsApp/Instagram sharing.
-18. **Weekly insight, food-only.** `services/weekly_insights.py` prompt: intake, protein, logging
+16. ✅ **Today in one call.** Already there: `GET /api/summary?date=` returns food totals, goals,
+    sleep, weight and supplements. Meals by slot: `GET /api/food/daily-totals-by-slot`.
+17. **Before/after share card.** Client-side: render the compare widget to an image (Flutter
+    `RepaintBoundary.toImage`) and share it. No server image rendering, and no body photo behind a URL.
+18. ✅ **Weekly insight, food-only.** Already the case: `services/weekly_insights.py` prompt: intake, protein, logging
     consistency and weight trend vs logged kcal. No burn.
-19. **Localised food names.** Dish DB aliases (item 1) let search and scan results show Hindi/Telugu
-    names. Add an optional `lang` on `/analyze` and `/describe`, so item names come back in the
-    user's language with English kept for matching.
+19. ✅ **Localised food names.** `lang` (hi/te/ta/kn/ml/mr/bn/gu) on `/analyze`, `/analyze-demo` and
+    `/describe` adds `name_local` per item; `name` stays English.
 
 ## Already done (2026-10-30)
 

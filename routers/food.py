@@ -5,14 +5,15 @@ import re
 import uuid
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form
 
 from bson import ObjectId
 from typing import Optional
 
 from auth import get_current_user
 from database import get_db
-from models.food_log import DescribeFoodRequest, FoodLogCreate, FoodItem, ItemEstimateRequest, MacroSource, MealSlot
+from models.food_log import (AiOriginalMacros, DescribeFoodRequest, FoodLogCreate, FoodItem, ItemEstimateRequest,
+                             MacroSource, MealSlot)
 from services import ai_quota
 from services import gemini as gemini_svc
 from services import minio_client
@@ -89,6 +90,37 @@ async def _price_items(items: list[dict], api_key: str, user_id: str, source_typ
         return {**item, **macros}
 
     return await asyncio.gather(*[one(i) for i in items])
+
+
+def _scale_to_net_weight(items: list[dict], net_weight_g: float) -> list[dict]:
+    """Scale every item so the plate totals the weighed net grams. Weight comes from the scale;
+    the model only splits it between items and supplies per-gram density."""
+    total = sum(float(i.get("estimated_weight_g") or 0) for i in items)
+    if total <= 0 or net_weight_g <= 0:
+        return items
+    f = net_weight_g / total
+    keys = ("estimated_weight_g", "calories_kcal", "protein_g", "carbs_g", "fat_g", "added_fat_g")
+    return [{**i, **{k: round(float(i[k]) * f, 1) for k in keys if i.get(k) is not None}} for i in items]
+
+
+async def _attach_ai_originals(body: FoodLogCreate, user_id: str, db) -> float | None:
+    """The app doesn't send ai_original, so look up what /analyze returned for this photo and attach
+    it per item (scaled to the saved weight, so only density edits count as corrections).
+    Returns the scan's total kcal, or None when this log didn't come from a scan."""
+    if not body.image_url:
+        return None
+    scan = await db.scan_results.find_one({"user_id": user_id, "image_url": body.image_url})
+    if not scan:
+        return None
+    by_name = {(i.get("name") or "").strip().lower(): i for i in scan["items"]}
+    for item in body.items:
+        orig = by_name.get(item.name.strip().lower())
+        w0 = float((orig or {}).get("estimated_weight_g") or 0)
+        if item.ai_original is None and orig and w0 > 0:
+            f = item.estimated_weight_g / w0
+            item.ai_original = AiOriginalMacros(**{k: float(orig.get(k) or 0) * f
+                                                   for k in ("calories_kcal", "protein_g", "carbs_g", "fat_g")})
+    return round(sum(float(i.get("calories_kcal") or 0) for i in scan["items"]), 1)
 
 
 async def _capture_corrections(items: list, user_id: str, db) -> None:
@@ -219,6 +251,8 @@ async def analyze_food(
     photo: UploadFile = File(...),
     model: Optional[str] = Form(None),
     image_url: Optional[str] = Form(None),
+    net_weight_g: Optional[float] = Form(None),
+    lang: Optional[str] = Form(None),
     user_id: str = Depends(get_current_user),
     _quota: None = Depends(ai_quota.photo_scan_gate),
 ):
@@ -241,7 +275,7 @@ async def analyze_food(
     retry_model = gemini_svc.RETRY_VISION_MODELS.get(model) if model else None
 
     # AI food analysis
-    analysis = await gemini_svc.analyze_food(image_bytes, api_key=api_key, model=retry_model)
+    analysis = await gemini_svc.analyze_food(image_bytes, api_key=api_key, model=retry_model, lang=lang)
     items = analysis.get("items", [])
     scale_weight_g = analysis.get("scale_weight_g")
 
@@ -270,6 +304,15 @@ async def analyze_food(
             }
 
     enriched_items = await _price_items(items, api_key, user_id)
+    if net_weight_g:
+        enriched_items = _scale_to_net_weight(enriched_items, net_weight_g)
+    # Kept so /logs can tell what the user edited (accuracy metric + correction learning)
+    await db.scan_results.update_one(
+        {"user_id": user_id, "image_url": image_url},
+        {"$set": {"items": enriched_items, "model": retry_model or gemini_svc._VISION_MODEL,
+                  "created_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
 
     return {
         "items": enriched_items,
@@ -277,6 +320,37 @@ async def analyze_food(
         "image_url": image_url,
         "meal_suggestion": meal_suggestion,
     }
+
+
+# Demo scan limits — in memory, so a restart resets them (fine for a cost guard)
+_DEMO_PER_IP = 3
+_DEMO_DAILY_CAP = 500
+_demo_hits: dict[str, int] = {}
+_demo_day = ""
+
+
+@router.post("/analyze-demo")
+async def analyze_demo(request: Request, photo: UploadFile = File(...), lang: Optional[str] = Form(None)):
+    """Try one scan before signing up: no account, nothing stored, a few per IP per day.
+    Same response shape as /analyze."""
+    global _demo_day
+    today = date.today().isoformat()
+    if today != _demo_day:
+        _demo_hits.clear()
+        _demo_day = today
+    # Behind the Cloudflare tunnel the real client IP is in CF-Connecting-IP
+    ip = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
+    if _demo_hits.get(ip, 0) >= _DEMO_PER_IP or sum(_demo_hits.values()) >= _DEMO_DAILY_CAP:
+        raise HTTPException(429, "Demo limit reached — sign up to keep scanning")
+    image_bytes = await photo.read()
+    validate_image_upload(image_bytes, photo.filename or "", photo.content_type)
+    api_key = get_openrouter_key(None)
+    if not api_key:
+        raise HTTPException(503, "Demo scan is unavailable")
+    _demo_hits[ip] = _demo_hits.get(ip, 0) + 1  # count before the call so parallel requests can't slip past
+    analysis = await gemini_svc.analyze_food(image_bytes, api_key=api_key, lang=lang)
+    items = [{**i, "source": "ai_estimated"} for i in analysis.get("items", []) if i.get("calories_kcal") is not None]
+    return {"items": items, "scale_weight_g": analysis.get("scale_weight_g"), "image_url": None, "meal_suggestion": None}
 
 
 @router.post("/describe")
@@ -299,7 +373,7 @@ async def describe_food(
         raise HTTPException(402, "Set your OpenRouter API key in Settings to use AI features")
 
     source_type = body.source_type.value if body.source_type else None
-    parsed = await gemini_svc.describe_food(text, api_key=api_key, source_type=source_type)
+    parsed = await gemini_svc.describe_food(text, api_key=api_key, source_type=source_type, lang=body.lang)
     items = parsed.get("items", [])
     if not items:
         raise HTTPException(422, "Couldn't identify any food items in that description")
@@ -445,6 +519,7 @@ async def create_food_log(body: FoodLogCreate, background_tasks: BackgroundTasks
 
     # Fetch user's API key — only needed if OpenFoodFacts misses an item
     api_key = get_openrouter_key(profile)
+    ai_kcal = await _attach_ai_originals(body, user_id, db)
 
     # Resolve macros — skip lookup for items that already carry all four macro values
     # (e.g. supplements logged from the quiz with macro_source='database').
@@ -502,6 +577,7 @@ async def create_food_log(body: FoodLogCreate, background_tasks: BackgroundTasks
             "carbs_g": round(total_carbs, 1),
             "fat_g": round(total_fat, 1),
         },
+        "ai_kcal": ai_kcal,  # scan's own total; totals vs this = how much the user corrected
         "created_at": now,
     }
 
