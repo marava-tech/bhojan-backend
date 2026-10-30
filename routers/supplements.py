@@ -7,7 +7,8 @@ from typing import Optional
 
 from auth import get_current_user
 from database import get_db
-from models.supplement import SupplementCreate, SupplementPatch, SupplementLogCreate
+from models.supplement import SupplementCreate, SupplementPatch, SupplementLogCreate, SupplementLogSet
+from services.supplement_presets import PRESETS
 from services.streak_calc import consecutive_days
 from utils import parse_object_id
 
@@ -73,7 +74,85 @@ async def delete_supplement(supp_id: str, user_id: str = Depends(get_current_use
         raise HTTPException(404, "Supplement not found")
 
 
+@router.get("/presets")
+async def list_presets():
+    """Popular supplements with a typical serving and macros, for one-tap adding."""
+    return PRESETS
+
+
 # ─── Supplement logs ─────────────────────────────────────────────────────────
+
+_MACRO_KEYS = (("calories_kcal", "calories_per_unit"), ("protein_g", "protein_per_unit"),
+               ("carbs_g", "carbs_per_unit"), ("fat_g", "fat_per_unit"))
+
+
+async def _rebuild_day(db, user_id: str, date_str: str) -> dict:
+    """Make the day's derived records match its supplement logs: one 'supplement' food entry (so calories and
+    protein from e.g. whey count toward the day) and the daily check-in's supplement list (what history reads).
+    Derived from the logs every time, so it can't drift however many times a chip is tapped."""
+    logs = await db.supplement_logs.find({"date": date_str, "user_id": user_id}).to_list(None)
+    supps = {str(s["_id"]): s for s in await db.supplements.find({"user_id": user_id}).to_list(None)}
+
+    entries, items = [], []
+    totals = {k: 0.0 for k, _ in _MACRO_KEYS}
+    for log in logs:
+        s = supps.get(log["supplement_id"])
+        if not s:
+            continue
+        units = log.get("units_taken") or 1
+        entries.append({"supplement_id": log["supplement_id"], "name": s["name"], "taken": True,
+                        "quantity": units, "unit": s.get("dose_unit", "")})
+        macros = {k: round((s.get(per) or 0) * units, 1) for k, per in _MACRO_KEYS}
+        if any(macros.values()):
+            weight = (s.get("dose_amount") or 0) * units if s.get("dose_unit") == "g" else 0
+            items.append({"name": s["name"], "estimated_weight_g": float(weight), **macros, "macro_source": "database"})
+            for k in totals:
+                totals[k] += macros[k]
+
+    now = datetime.now(timezone.utc)
+    await db.food_logs.delete_many({"date": date_str, "meal_slot": "supplement", "user_id": user_id})
+    if items:
+        await db.food_logs.insert_one({
+            "user_id": user_id, "date": date_str, "meal_slot": "supplement", "source_type": None,
+            "items": items, "image_url": None, "note": None, "ai_kcal": None, "created_at": now,
+            "totals": {k: round(v, 1) for k, v in totals.items()},
+        })
+    await db.daily_checkins.update_one(
+        {"date": date_str, "user_id": user_id},
+        {"$set": {"supplement_entries": entries, "updated_at": now}, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+    return {k: round(v, 1) for k, v in totals.items()}
+
+
+@router.put("/logs")
+async def set_supplement_taken(body: SupplementLogSet, user_id: str = Depends(get_current_user)):
+    """Mark one supplement taken or not taken on a day. Idempotent: calling it twice changes nothing."""
+    db = get_db()
+    try:
+        date.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(400, "Invalid date, expected YYYY-MM-DD")
+    supp = await db.supplements.find_one({"_id": parse_object_id(body.supplement_id, "supplement_id"), "user_id": user_id})
+    if not supp:
+        raise HTTPException(404, "Supplement not found")
+
+    key = {"supplement_id": body.supplement_id, "date": body.date, "user_id": user_id}
+    if body.taken:
+        now = datetime.now(timezone.utc)
+        await db.supplement_logs.update_one(
+            key,
+            {"$set": {"supplement_name": supp["name"], "units_taken": body.units_taken, "updated_at": now},
+             "$setOnInsert": {**key, "created_at": now}},
+            upsert=True,
+        )
+    else:
+        await db.supplement_logs.delete_one(key)
+
+    await _update_supplement_streak(body.supplement_id, user_id, db)
+    totals = await _rebuild_day(db, user_id, body.date)
+    return {"date": body.date, "supplement_id": body.supplement_id, "taken": body.taken, "supplement_totals": totals}
+
 
 @router.post("/logs", status_code=201)
 async def log_supplement(body: SupplementLogCreate, user_id: str = Depends(get_current_user)):
