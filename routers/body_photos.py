@@ -136,13 +136,14 @@ async def list_comparisons(user_id: str = Depends(get_current_user)):
 
 
 @router.get("")
-async def list_body_photos(days: int = 90, user_id: str = Depends(get_current_user)):
+async def list_body_photos(days: int = 0, limit: int = 0, user_id: str = Depends(get_current_user)):
+    """Newest first. days/limit 0 = no cap — a 90-day default hid most of a long-time user's photos."""
     db = get_db()
     query: dict = {"user_id": user_id}
     if days > 0:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         query["date"] = {"$gte": cutoff}
-    docs = await db.body_photos.find(query).sort("date", -1).to_list(None)
+    docs = await db.body_photos.find(query).sort("date", -1).limit(max(limit, 0)).to_list(None)
     for d in docs:
         d["_id"] = str(d["_id"])
     return {"photos": docs}
