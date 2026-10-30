@@ -1,6 +1,6 @@
 """Adaptive TDEE insight — GET /api/tdee/insight, POST /api/tdee/apply."""
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -16,21 +16,23 @@ router = APIRouter(prefix="/api/tdee", tags=["tdee"])
 _WINDOW_DAYS = 21
 
 
-async def _gather_data(db, user_id: str) -> tuple[dict, dict, list]:
-    """Pull intake + weight data for the insight window."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=_WINDOW_DAYS)).date().isoformat()
+async def _gather_data(db, user_id: str, end: date | None = None) -> tuple[dict, dict, list]:
+    """Pull intake + weight data for the insight window ending at `end` (default today)."""
+    end = end or datetime.now(timezone.utc).date()
+    cutoff = (end - timedelta(days=_WINDOW_DAYS)).isoformat()
+    until = end.isoformat()
 
     # Aggregate daily kcal from food_logs
     pipeline = [
-        {"$match": {"user_id": user_id, "date": {"$gte": cutoff}}},
-        {"$group": {"_id": "$date", "total_kcal": {"$sum": "$total_kcal"}}},
+        {"$match": {"user_id": user_id, "date": {"$gte": cutoff, "$lte": until}}},
+        {"$group": {"_id": "$date", "total_kcal": {"$sum": "$totals.calories_kcal"}}},
     ]
     intake_docs = await db.food_logs.aggregate(pipeline).to_list(None)
     intake_by_date = {d["_id"]: d["total_kcal"] for d in intake_docs}
 
     # Weight entries
     weight_docs = await db.weight_photos.find(
-        {"user_id": user_id, "date": {"$gte": cutoff}},
+        {"user_id": user_id, "date": {"$gte": cutoff, "$lte": until}},
         {"date": 1, "weight_kg": 1},
     ).to_list(None)
     weight_by_date = {
@@ -41,18 +43,38 @@ async def _gather_data(db, user_id: str) -> tuple[dict, dict, list]:
 
     # Last 4 ISO weeks for plateau detection
     week_pipeline = [
-        {"$match": {"user_id": user_id}},
+        {"$match": {"user_id": user_id, "date": {"$lte": until}}},
         {"$group": {
             "_id": {"$dateToString": {"format": "%G-W%V", "date": {"$dateFromString": {"dateString": "$date"}}}},
             "avg_weight": {"$avg": "$weight_kg"},
         }},
-        {"$sort": {"_id": 1}},
+        {"$sort": {"_id": -1}},
         {"$limit": 4},
     ]
-    week_docs = await db.weight_photos.aggregate(week_pipeline).to_list(None)
+    # Newest 4 weeks, flipped back to oldest-first for detect_plateau
+    week_docs = (await db.weight_photos.aggregate(week_pipeline).to_list(None))[::-1]
     weekly_avgs = [{"week_start": d["_id"], "avg_weight": d["avg_weight"]} for d in week_docs]
 
     return intake_by_date, weight_by_date, weekly_avgs
+
+
+_MIN_WEARABLE_DAYS = 7
+
+
+async def _with_wearable(db, user_id: str, insight: dict, end: date | None = None) -> dict:
+    """Attach the wearable-measured burn; when logs + weigh-ins are too thin for the adaptive
+    estimate, the wearable average becomes the maintenance figure the suggestion works from."""
+    end = end or datetime.now(timezone.utc).date()
+    docs = await db.energy_burned.find(
+        {"user_id": user_id, "date": {"$gte": (end - timedelta(days=_WINDOW_DAYS)).isoformat(), "$lte": end.isoformat()}},
+        {"kcal": 1},
+    ).to_list(None)
+    kcal = [d["kcal"] for d in docs]
+    insight = {**insight, "wearable_days": len(kcal),
+               "wearable_tdee_kcal": round(sum(kcal) / len(kcal)) if kcal else None}
+    if insight["confidence"] == "insufficient" and len(kcal) >= _MIN_WEARABLE_DAYS:
+        insight.update(real_tdee_kcal=insight["wearable_tdee_kcal"], confidence="wearable")
+    return insight
 
 
 @router.get("/insight")
@@ -64,7 +86,7 @@ async def get_tdee_insight(user_id: str = Depends(get_current_user)):
         raise HTTPException(404, "Profile not found")
 
     intake_by_date, weight_by_date, weekly_avgs = await _gather_data(db, user_id)
-    insight = compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS)
+    insight = await _with_wearable(db, user_id, compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS))
     is_plateau = detect_plateau(weekly_avgs)
     suggestion = build_suggestion(insight, profile, is_plateau=is_plateau)
 
@@ -86,7 +108,7 @@ async def apply_tdee_suggestion(user_id: str = Depends(get_current_user)):
         raise HTTPException(404, "Profile not found")
 
     intake_by_date, weight_by_date, weekly_avgs = await _gather_data(db, user_id)
-    insight = compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS)
+    insight = await _with_wearable(db, user_id, compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS))
     is_plateau = detect_plateau(weekly_avgs)
     suggestion = build_suggestion(insight, profile, is_plateau=is_plateau)
 
@@ -94,6 +116,7 @@ async def apply_tdee_suggestion(user_id: str = Depends(get_current_user)):
         raise HTTPException(400, "No actionable suggestion available right now.")
 
     new_goal = suggestion["suggested_goal_kcal"]
+    source = "wearable" if insight["confidence"] == "wearable" else "adaptive"
     real_tdee = insight.get("real_tdee_kcal")
 
     await db.user_profile.update_one(
@@ -101,18 +124,18 @@ async def apply_tdee_suggestion(user_id: str = Depends(get_current_user)):
         {"$set": {
             "goal_kcal": new_goal,
             "real_tdee_kcal": real_tdee,
-            "tdee_source": "adaptive",
+            "tdee_source": source,
             "updated_at": datetime.now(timezone.utc),
         }},
     )
     updated_profile = await db.user_profile.find_one({"user_id": user_id})
     await snapshot_goal_history(db, user_id, updated_profile)
 
-    logger.info("User %s applied adaptive TDEE: goal=%s real_tdee=%s", user_id, new_goal, real_tdee)
+    logger.info("User %s applied %s TDEE: goal=%s real_tdee=%s", user_id, source, new_goal, real_tdee)
     return {
         "goal_kcal": new_goal,
         "real_tdee_kcal": real_tdee,
-        "tdee_source": "adaptive",
+        "tdee_source": source,
         "suggestion_type": suggestion["type"],
         "message": suggestion["message"],
     }

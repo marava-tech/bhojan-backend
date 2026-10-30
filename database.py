@@ -76,6 +76,8 @@ async def ensure_indexes():
     await _create_index(
         db.food_corrections, [("user_id", 1), ("name_norm", 1)], background=True, unique=True
     )
+    # Daily total energy burned from Health Connect wearables — one row per user per day
+    await _create_index(db.energy_burned, [("user_id", 1), ("date", 1)], background=True, unique=True)
     # OTP expiry — MongoDB auto-deletes documents after expires_at
     await _create_index(db.otp_requests, "expires_at", expireAfterSeconds=0, background=True)
     await _create_index(db.users, "email", unique=True, sparse=True, background=True)

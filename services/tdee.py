@@ -1,18 +1,20 @@
-"""TDEE calculation — Mifflin-St Jeor + activity multiplier based on training frequency."""
+"""TDEE calculation — Mifflin-St Jeor × 1.2 (desk-job baseline) + gym sessions priced by MET.
+
+The old Harris-Benedict multiplier table (up to 1.9 for daily training) overshot a WHOOP-measured
+user by 59% (3010 vs 1888 kcal/day); see scripts/check_tdee_with_data.py. This is only the starting
+guess — the adaptive TDEE (services/adaptive_tdee.py) replaces it once intake + weight exist."""
 
 RECOMP_SURPLUS = 75     # kcal above TDEE
 PROTEIN_RATIO = 2.0     # g per kg body weight
 
 
-def _activity_multiplier(gym_days_per_week: int) -> float:
-    """Standard Harris-Benedict activity multipliers by weekly training frequency."""
-    if gym_days_per_week <= 1:
-        return 1.375   # light activity
-    if gym_days_per_week <= 4:
-        return 1.55    # moderate (3-4x/week)
-    if gym_days_per_week <= 6:
-        return 1.725   # very active (5-6x/week)
-    return 1.9         # extra active (daily)
+# Net cost of one ~1h gym session: (MET 4 − 1 resting) × kg × 1h. A WHOOP-tracked 64 kg user
+# measured ~140 kcal gross per strength session, so this is already on the generous side.
+_SESSION_NET_MET_HOURS = 3.0
+
+
+def _training_kcal_per_day(weight_kg: float, gym_days_per_week: int) -> float:
+    return gym_days_per_week * _SESSION_NET_MET_HOURS * weight_kg / 7
 
 
 def calculate_tdee(
@@ -28,7 +30,7 @@ def calculate_tdee(
     else:
         bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
 
-    tdee = round(bmr * _activity_multiplier(gym_days_per_week))
+    tdee = round(bmr * 1.2 + _training_kcal_per_day(weight_kg, gym_days_per_week))
     goal_kcal = tdee + RECOMP_SURPLUS
     protein_g = round(weight_kg * PROTEIN_RATIO)
 
