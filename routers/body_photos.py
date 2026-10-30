@@ -126,6 +126,41 @@ async def compare_body_photos(
     }
 
 
+@router.get("/pair")
+async def photo_pair(a: str, b: str, user_id: str = Depends(get_current_user)):
+    """Two of the user's photos with their dates, the days between them, and the weight near each date,
+    so the compare screen can say "-3.2 kg in 48 days"."""
+    db = get_db()
+    photos = {}
+    for key, pid in (("a", a), ("b", b)):
+        doc = await db.body_photos.find_one({"photo_id": pid, "user_id": user_id}, {"_id": 0, "user_id": 0})
+        if not doc:
+            raise HTTPException(404, "Photo not found")
+        photos[key] = doc
+
+    weights = await db.weight_photos.find({"user_id": user_id, "weight_kg": {"$ne": None}}, {"date": 1, "weight_kg": 1}).to_list(None)
+
+    def weight_near(day: str) -> float | None:
+        # ponytail: nearest weigh-in within a week of the photo; use the trend line if daily noise matters.
+        d = date.fromisoformat(day)
+        best = min(weights, key=lambda w: abs((date.fromisoformat(w["date"]) - d).days), default=None)
+        if best and abs((date.fromisoformat(best["date"]) - d).days) <= 7:
+            return float(best["weight_kg"])
+        return None
+
+    for p in photos.values():
+        p["weight_kg"] = weight_near(p["date"])
+    wa, wb = photos["a"]["weight_kg"], photos["b"]["weight_kg"]
+    days = abs((date.fromisoformat(photos["b"]["date"]) - date.fromisoformat(photos["a"]["date"])).days)
+    return {
+        "a": photos["a"],
+        "b": photos["b"],
+        "days_apart": days,
+        # change from the earlier photo to the later one
+        "weight_change_kg": None if wa is None or wb is None else round((wb - wa) if photos["b"]["date"] >= photos["a"]["date"] else (wa - wb), 1),
+    }
+
+
 @router.get("/comparisons")
 async def list_comparisons(user_id: str = Depends(get_current_user)):
     db = get_db()
