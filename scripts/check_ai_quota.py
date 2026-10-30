@@ -39,11 +39,14 @@ async def main():
     except HTTPException as e:
         assert e.status_code == 429
 
-    # own key = unlimited, never touches the counter
-    own = {"openrouter_api_key": "sk-x"}
-    for _ in range(10):
-        await ai_quota.consume(db, "u2", own)
-    assert (await ai_quota.status(db, "u2", own))["unlimited"]
+    # trial: ObjectId made now => premium; made 10 days ago => free (5/day)
+    from bson import ObjectId
+    from datetime import datetime, timedelta, timezone
+    fresh = str(ObjectId())
+    stale = str(ObjectId.from_datetime(datetime.now(timezone.utc) - timedelta(days=10)))
+    assert (await ai_quota.status(db, fresh, None))["premium"]
+    st = await ai_quota.status(db, stale, None)
+    assert not st["premium"] and st["limit"] == 3 and st["trial_ends_at"] is None, st
 
     # gate: handler raising refunds; retry-with-model is free
     async def run_gate(gate_gen, fail):

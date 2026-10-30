@@ -1,7 +1,8 @@
-"""Per-user daily quota for AI scans that run on the server's OpenRouter key.
+"""Per-user daily quota for AI scans (server OpenRouter key). Free vs Premium.
 
-Users who saved their own OpenRouter key are exempt (they pay for their own calls).
-Extra scans are earned via rewarded ads (POST /api/ai/reward), capped per day.
+Free users can earn extra scans by watching a rewarded ad (POST /api/ai/reward), capped per day.
+
+New accounts get a WELCOME_DAYS boost so the first week shows the product working.
 """
 import os
 from datetime import datetime, timedelta, timezone
@@ -9,24 +10,32 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from typing import Optional
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import Depends, Form, HTTPException
 
 from auth import get_current_user
 from database import get_db
 
-FREE_DAILY = int(os.environ.get("AI_FREE_SCANS_PER_DAY", "3"))
+FREE_DAILY = int(os.environ.get("AI_FREE_SCANS_PER_DAY", "5"))
 PREMIUM_DAILY = int(os.environ.get("AI_PREMIUM_SCANS_PER_DAY", "25"))
 MAX_REWARDS_PER_DAY = int(os.environ.get("AI_MAX_REWARDS_PER_DAY", "5"))
+TRIAL_DAYS = int(os.environ.get("PREMIUM_TRIAL_DAYS", "3"))
 
 
-def has_own_key(profile: dict | None) -> bool:
-    return bool((profile or {}).get("openrouter_api_key"))
+def trial_ends_at(user_id: str) -> datetime | None:
+    """Every new account is Premium (no ads, full limits) for TRIAL_DAYS. user_id is the users._id
+    ObjectId, whose embedded timestamp is the signup time."""
+    try:
+        end = ObjectId(user_id).generation_time + timedelta(days=TRIAL_DAYS)
+    except InvalidId:
+        return None
+    return end if end > datetime.now(timezone.utc) else None
 
 
 async def _premium(db, user_id: str) -> bool:
-    # local import: entitlements imports this module (has_own_key)
     from services.entitlements import is_premium
-    return await is_premium(db, user_id)
+    return trial_ends_at(user_id) is not None or await is_premium(db, user_id)
 
 
 def _today(profile: dict | None) -> str:
@@ -56,7 +65,7 @@ async def status(db, user_id: str, profile: dict | None) -> dict:
     limit = (PREMIUM_DAILY if premium else FREE_DAILY) + doc["bonus"]
     return {
         "premium": premium,
-        "unlimited": has_own_key(profile),
+        "trial_ends_at": (t.isoformat() if (t := trial_ends_at(user_id)) else None),
         "limit": limit,
         "used": doc["used"],
         "remaining": max(limit - doc["used"], 0),
@@ -66,8 +75,6 @@ async def status(db, user_id: str, profile: dict | None) -> dict:
 
 async def consume(db, user_id: str, profile: dict | None) -> None:
     """Take one scan from today's quota or raise 429 (structured detail the app keys off)."""
-    if has_own_key(profile):
-        return
     day = _today(profile)
     await _ensure_doc(db, user_id, day)
     base = PREMIUM_DAILY if await _premium(db, user_id) else FREE_DAILY
@@ -88,8 +95,6 @@ async def consume(db, user_id: str, profile: dict | None) -> None:
 
 async def refund(db, user_id: str, profile: dict | None) -> None:
     """Give the scan back when the AI call itself failed."""
-    if has_own_key(profile):
-        return
     await db.ai_usage.update_one(
         {"user_id": user_id, "date": _today(profile), "used": {"$gt": 0}},
         {"$inc": {"used": -1}},

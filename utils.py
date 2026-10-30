@@ -18,8 +18,8 @@ _IMAGE_MAGIC: list[tuple[bytes, str]] = [
 
 
 def get_openrouter_key(profile: dict | None) -> str | None:
-    """Return the user's personal OpenRouter key, falling back to the server-wide key."""
-    return (profile or {}).get("openrouter_api_key") or os.environ.get("OPENROUTER_API_KEY")
+    """Server-wide OpenRouter key (users no longer bring their own)."""
+    return os.environ.get("OPENROUTER_API_KEY")
 
 
 def require_feature_enabled(profile: dict | None, flag: str, label: str) -> None:
