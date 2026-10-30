@@ -3,10 +3,10 @@ from typing import Optional, List
 
 
 class NotificationPrefs(BaseModel):
-    if_window: bool = True
+    if_window: bool = False
     sleep_prompt: bool = True
     weight_reminder: bool = True
-    gym_photo_nudge: bool = True
+    gym_photo_nudge: bool = False
     weekly_summary: bool = True
     daily_checkin_reminder: bool = True  # 10pm summary: today's kcal + protein + remaining
     end_of_day_reconcile: bool = True    # 8:30pm nudge if < 2 meals logged today
@@ -26,7 +26,7 @@ class FeatureFlags(BaseModel):
     sleep_tracking: bool = False
     progress_photos: bool = False
     health_sync: bool = False
-    gym_tracking: bool = True
+    gym_tracking: bool = False
     supplement_tracking: bool = True
 
 
@@ -45,6 +45,9 @@ class ProfileCreate(BaseModel):
     gym_days: Optional[List[int]] = None  # 0=Mon … 6=Sun
     if_enabled: bool = False
     subtract_bowl_weight: bool = False
+    goal: str = "lose"  # "lose" | "maintain" | "gain"
+    diet_pref: Optional[str] = None  # "veg" | "egg" | "nonveg"
+    target_weight_kg: Optional[float] = None
     feature_flags: FeatureFlags = Field(default_factory=FeatureFlags)
 
 
@@ -78,6 +81,9 @@ class ProfilePatch(BaseModel):
     rest_fat_g: Optional[int] = None
     if_enabled: Optional[bool] = None
     subtract_bowl_weight: Optional[bool] = None
+    goal: Optional[str] = None
+    diet_pref: Optional[str] = None
+    target_weight_kg: Optional[float] = None
     disabled_meal_slots: Optional[List[str]] = None  # e.g. ["breakfast"]
     feature_flags: Optional[FeatureFlags] = None
 
