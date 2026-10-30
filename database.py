@@ -76,6 +76,8 @@ async def ensure_indexes():
     await _create_index(
         db.food_corrections, [("user_id", 1), ("name_norm", 1)], background=True, unique=True
     )
+    # Barcode products: OpenFoodFacts hits are shared (user_id None); label reads are per user
+    await _create_index(db.barcode_products, [("barcode", 1), ("user_id", 1)], background=True, unique=True)
     # OTP expiry — MongoDB auto-deletes documents after expires_at
     await _create_index(db.otp_requests, "expires_at", expireAfterSeconds=0, background=True)
     await _create_index(db.users, "email", unique=True, sparse=True, background=True)

@@ -1,6 +1,7 @@
 """Food logging — AI analysis pipeline + CRUD for logs."""
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -15,7 +16,7 @@ from models.food_log import DescribeFoodRequest, FoodLogCreate, FoodItem, ItemEs
 from services import ai_quota
 from services import gemini as gemini_svc
 from services import minio_client
-from services.openfoodfacts import lookup_macros
+from services.openfoodfacts import lookup_barcode, lookup_macros
 from utils import validate_image_upload, get_openrouter_key
 
 # Correction-blend config
@@ -306,6 +307,95 @@ async def describe_food(
     enriched_items = await _price_items(items, api_key, user_id, source_type)
 
     return {"items": enriched_items}
+
+
+_BARCODE_RE = re.compile(r"^\d{8,14}$")
+_BARCODE_REFRESH_DAYS = 30
+
+
+def _check_barcode(code: str) -> None:
+    if not _BARCODE_RE.match(code):
+        raise HTTPException(400, "Barcode must be 8–14 digits")
+
+
+def _barcode_out(code: str, doc: dict) -> dict:
+    return {
+        "barcode": code,
+        "name": doc.get("name"),
+        "brand": doc.get("brand"),
+        "per_100g": doc["per_100g"],
+        "serving_g": doc.get("serving_g"),
+        "image_url": doc.get("image_url"),
+        "source": doc["source"],  # "openfoodfacts" | "label"
+    }
+
+
+@router.get("/barcode/{code}")
+async def get_barcode_product(code: str, user_id: str = Depends(get_current_user)):
+    """Packaged food by barcode: the user's own label scan, else OpenFoodFacts (cached, shared)."""
+    _check_barcode(code)
+    db = get_db()
+    # The user's own label read wins — it's what's printed on the pack in their hand.
+    own = await db.barcode_products.find_one({"barcode": code, "user_id": user_id})
+    if own:
+        return _barcode_out(code, own)
+
+    shared = await db.barcode_products.find_one({"barcode": code, "user_id": None})
+    fresh_after = (date.today() - timedelta(days=_BARCODE_REFRESH_DAYS)).isoformat()
+    if shared and shared.get("fetched_on", "") >= fresh_after:
+        return _barcode_out(code, shared)
+
+    found = await lookup_barcode(code)
+    if not found:
+        if shared:  # OpenFoodFacts down or product removed — stale beats nothing
+            return _barcode_out(code, shared)
+        raise HTTPException(404, "Product not found. Scan its nutrition label instead.")
+    doc = {**found, "source": "openfoodfacts", "fetched_on": date.today().isoformat()}
+    await db.barcode_products.update_one({"barcode": code, "user_id": None}, {"$set": doc}, upsert=True)
+    return _barcode_out(code, doc)
+
+
+@router.post("/barcode/{code}/label")
+async def read_barcode_label(
+    code: str,
+    photo: UploadFile = File(...),
+    user_id: str = Depends(get_current_user),
+    _quota: None = Depends(ai_quota.scan_gate),
+):
+    """Read the nutrition label for a barcode OpenFoodFacts doesn't know (common for Indian packs),
+    and remember it for this user so the next scan of that barcode is instant."""
+    _check_barcode(code)
+    db = get_db()
+    image_bytes = await photo.read()
+    validate_image_upload(image_bytes, photo.filename or "", photo.content_type)
+    profile = await db.user_profile.find_one({"user_id": user_id})
+    api_key = get_openrouter_key(profile)
+    if not api_key:
+        raise HTTPException(402, "Set your OpenRouter API key in Settings to use AI features")
+
+    data = await gemini_svc.read_nutrition_label(image_bytes, api_key=api_key)
+    per = data.get("per_100g") or {}
+    try:
+        per = {k: round(float(per[k]), 1) for k in ("calories_kcal", "protein_g", "carbs_g", "fat_g")}
+    except (KeyError, TypeError, ValueError):
+        per = None
+    # Nothing edible is above ~900 kcal/100g (pure fat); negative or empty means a misread.
+    if data.get("error") or not per or not (0 < per["calories_kcal"] <= 950) or min(per.values()) < 0:
+        raise HTTPException(422, "Couldn't read that label. Try a closer, sharper photo of the nutrition table.")
+
+    shared = await db.barcode_products.find_one({"barcode": code, "user_id": None}) or {}
+    serving = data.get("serving_g")
+    doc = {
+        "name": data.get("name") or shared.get("name") or f"Product {code}",
+        "brand": shared.get("brand"),
+        "per_100g": per,
+        "serving_g": float(serving) if isinstance(serving, (int, float)) and serving > 0 else None,
+        "image_url": shared.get("image_url"),
+        "source": "label",
+        "fetched_on": date.today().isoformat(),
+    }
+    await db.barcode_products.update_one({"barcode": code, "user_id": user_id}, {"$set": doc}, upsert=True)
+    return _barcode_out(code, doc)
 
 
 @router.post("/estimate-item")
