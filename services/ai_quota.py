@@ -2,7 +2,7 @@
 
 Free users can earn extra scans by watching a rewarded ad (POST /api/ai/reward), capped per day.
 
-New accounts get a WELCOME_DAYS boost so the first week shows the product working.
+Users can opt in to a TRIAL_DAYS Premium trial once (POST /api/ai/trial); it is never automatic.
 """
 import os
 from datetime import datetime, timedelta, timezone
@@ -23,19 +23,39 @@ MAX_REWARDS_PER_DAY = int(os.environ.get("AI_MAX_REWARDS_PER_DAY", "5"))
 TRIAL_DAYS = int(os.environ.get("PREMIUM_TRIAL_DAYS", "3"))
 
 
-def trial_ends_at(user_id: str) -> datetime | None:
-    """Every new account is Premium (no ads, full limits) for TRIAL_DAYS. user_id is the users._id
-    ObjectId, whose embedded timestamp is the signup time."""
+async def trial_ends_at(db, user_id: str) -> datetime | None:
+    """Premium (no ads, full limits) for TRIAL_DAYS, only after the user taps "start trial"
+    (start_trial). One per account: users.trial_started_at is never cleared."""
     try:
-        end = ObjectId(user_id).generation_time + timedelta(days=TRIAL_DAYS)
+        u = await db.users.find_one({"_id": ObjectId(user_id)}, {"trial_started_at": 1})
     except InvalidId:
         return None
+    start = (u or {}).get("trial_started_at")
+    if not start:
+        return None
+    end = start.replace(tzinfo=timezone.utc) + timedelta(days=TRIAL_DAYS)
     return end if end > datetime.now(timezone.utc) else None
+
+
+async def start_trial(db, user_id: str) -> None:
+    """Idempotent: a second call (or a reinstall) never restarts the clock."""
+    await db.users.update_one(
+        {"_id": ObjectId(user_id), "trial_started_at": {"$exists": False}},
+        {"$set": {"trial_started_at": datetime.now(timezone.utc)}},
+    )
+
+
+async def trial_available(db, user_id: str) -> bool:
+    try:
+        u = await db.users.find_one({"_id": ObjectId(user_id)}, {"trial_started_at": 1})
+    except InvalidId:
+        return False
+    return bool(u) and not u.get("trial_started_at")
 
 
 async def _premium(db, user_id: str) -> bool:
     from services.entitlements import is_premium
-    return trial_ends_at(user_id) is not None or await is_premium(db, user_id)
+    return await trial_ends_at(db, user_id) is not None or await is_premium(db, user_id)
 
 
 def _today(profile: dict | None) -> str:
@@ -62,10 +82,12 @@ async def status(db, user_id: str, profile: dict | None) -> dict:
     await _ensure_doc(db, user_id, day)
     doc = await db.ai_usage.find_one({"user_id": user_id, "date": day})
     premium = await _premium(db, user_id)
+    trial_end = await trial_ends_at(db, user_id)
     limit = (PREMIUM_DAILY if premium else FREE_DAILY) + doc["bonus"]
     return {
         "premium": premium,
-        "trial_ends_at": (t.isoformat() if (t := trial_ends_at(user_id)) else None),
+        "trial_ends_at": trial_end.isoformat() if trial_end else None,
+        "trial_available": await trial_available(db, user_id),
         "limit": limit,
         "free_limit": FREE_DAILY,        # so the paywall quotes the real numbers if the env changes them
         "premium_limit": PREMIUM_DAILY,
