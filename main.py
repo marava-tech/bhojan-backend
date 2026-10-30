@@ -32,6 +32,7 @@ def _check_env():
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 from routers import (
+    account,
     ai_quota as ai_quota_router,
     billing,
     insights,
@@ -58,7 +59,7 @@ scheduler = AsyncIOScheduler()
 
 
 async def _send_weekly_summary():
-    """Send FCM notification for weekly summary every Sunday 8pm."""
+    """Send FCM notification for weekly summary every Sunday 8pm IST (14:30 UTC)."""
     db = get_db()
     iso = datetime.now(timezone.utc).date().isocalendar()
     week = f"{iso.year}-W{iso.week:02d}"
@@ -81,47 +82,6 @@ async def _send_weekly_summary():
 
 
 
-
-
-async def _send_checkin_reminder(second: bool = False):
-    """Remind at 10pm / 11:30pm IST to complete today's check-in — only if not done.
-
-    Runs at 16:30 UTC (22:00 IST) and 18:00 UTC (23:30 IST).
-    """
-    db = get_db()
-    profiles = await db.user_profile.find({"fcm_token": {"$ne": None}}).to_list(None)
-
-    async def _send(profile_doc):
-        if not profile_doc.get("notification_prefs", {}).get("daily_checkin_reminder", True):
-            return
-        user_id = profile_doc.get("user_id")
-        tz_name = profile_doc.get("user_timezone", "UTC")
-        try:
-            user_tz = ZoneInfo(tz_name)
-        except ZoneInfoNotFoundError:
-            user_tz = ZoneInfo("UTC")
-
-        today = datetime.now(user_tz).date().isoformat()
-        if await db.daily_checkins.find_one({"user_id": user_id, "date": today}):
-            return  # already checked in — no reminder
-
-        notif_body = (
-            "Last call — you still haven't logged today's check-in. Takes 2 mins."
-            if second else
-            "Time for your evening check-in — takes 2 mins."
-        )
-
-        try:
-            await fcm_svc.send_notification(
-                profile_doc["fcm_token"],
-                "📋 Daily Check-in",
-                notif_body,
-                {"type": "daily_quiz", "date": today},
-            )
-        except Exception as e:
-            logger.error("Failed to send check-in reminder FCM for user %s: %s", user_id, e)
-
-    await asyncio.gather(*[_send(p) for p in profiles])
 
 
 async def _end_of_day_reconcile():
@@ -165,13 +125,9 @@ async def _end_of_day_reconcile():
 async def lifespan(app: FastAPI):
     _check_env()
     await ensure_indexes()
-    # Sunday at 20:00 UTC — weekly summary FCM
-    scheduler.add_job(_send_weekly_summary, "cron", day_of_week="sun", hour=20, minute=0)
+    # Sunday 14:30 UTC (20:00 IST) — weekly summary FCM
+    scheduler.add_job(_send_weekly_summary, "cron", day_of_week="sun", hour=14, minute=30)
 
-    # Daily at 16:30 UTC (22:00 IST) — check-in reminder if not done
-    scheduler.add_job(_send_checkin_reminder, "cron", hour=16, minute=30)
-    # Daily at 18:00 UTC (23:30 IST) — second check-in reminder if still not done
-    scheduler.add_job(_send_checkin_reminder, "cron", hour=18, minute=0, kwargs={"second": True})
     # Daily at 15:00 UTC (20:30 IST) — EOD reconcile nudge if < 2 meals logged
     scheduler.add_job(_end_of_day_reconcile, "cron", hour=15, minute=0)
     scheduler.start()
@@ -201,6 +157,7 @@ async def _openrouter_error(request: Request, exc: httpx.HTTPStatusError):
 
 
 app.include_router(auth_router.router)
+app.include_router(account.router)
 app.include_router(profile.router)
 app.include_router(food.router)
 app.include_router(saved_meals.router)
