@@ -90,6 +90,7 @@ class DescribeFoodRequest(BaseModel):
     '100g cooked chicken breast with 2 tsp oil'."""
     text: str
     source_type: Optional[SourceType] = None
+    lang: Optional[str] = None  # hi/te/ta/... → items also get name_local
 
 
 class AnalyzedItem(BaseModel):

@@ -55,6 +55,8 @@ async def ensure_indexes():
     await _create_index(db.weight_photos, [("photo_id", 1)], background=True)
     # user_id compound indexes for multi-user isolation
     await _create_index(db.user_profile, [("user_id", 1)], background=True, unique=True)
+    await _create_index(db.scan_results, [("user_id", 1), ("image_url", 1)], background=True, unique=True)
+    await _create_index(db.scan_results, [("created_at", 1)], background=True, expireAfterSeconds=30 * 86400)
     await _create_index(db.food_logs, [("user_id", 1), ("date", 1)], background=True)
     await _create_index(db.supplement_logs, [("user_id", 1), ("supplement_id", 1)], background=True)
     await _create_index(db.gym_sessions, [("user_id", 1), ("date", 1)], background=True)

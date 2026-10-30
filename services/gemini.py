@@ -126,13 +126,25 @@ Return ONLY valid JSON, no explanation, no markdown:
 "scale_weight_g": number or null}"""
 
 
-async def analyze_food(image_bytes: bytes, api_key: str, model: str | None = None) -> dict:
+LANGUAGES = {"hi": "Hindi", "te": "Telugu", "ta": "Tamil", "kn": "Kannada", "ml": "Malayalam",
+             "mr": "Marathi", "bn": "Bengali", "gu": "Gujarati"}
+
+
+def _lang_note(lang: str | None) -> str:
+    """Extra instruction asking for each item's common name in the user's language (names stay English)."""
+    if lang not in LANGUAGES:
+        return ""
+    return (f'\n\nAlso add "name_local" to every item: the name people in India use for it, written in '
+            f'{LANGUAGES[lang]} script (e.g. the {LANGUAGES[lang]} word for roti or dal). Keep "name" in English.')
+
+
+async def analyze_food(image_bytes: bytes, api_key: str, model: str | None = None, lang: str | None = None) -> dict:
     """Return {items: [{name, estimated_weight_g, cooking_method, calories_kcal, protein_g, carbs_g, fat_g,
     added_fat_g, pieces}],
     scale_weight_g: float|None}. One call that sees the image and prices it — scripts/eval_accuracy.py
     showed this beats identifying first and pricing the name in a second text call."""
     messages = [{"role": "user", "content": [
-        {"type": "text", "text": _FOOD_ANALYZE_PROMPT},
+        {"type": "text", "text": _FOOD_ANALYZE_PROMPT + _lang_note(lang)},
         {"type": "image_url", "image_url": {"url": _img_url(image_bytes)}},
     ]}]
     text = await _chat(model or _VISION_MODEL, messages, api_key=api_key, system=_FOOD_SYSTEM)
@@ -174,14 +186,14 @@ Return ONLY valid JSON, no explanation, no markdown:
 "calories_kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number}}]}}"""
 
 
-async def describe_food(text: str, api_key: str, source_type: str | None = None) -> dict:
+async def describe_food(text: str, api_key: str, source_type: str | None = None, lang: str | None = None) -> dict:
     """Parse a free-text meal description into {items: [{name, estimated_weight_g, cooking_method, macros...}]}.
 
     Text-only counterpart to analyze_food — used by the "describe" logging option (no photo).
     Runs on the vision model for maximum extraction accuracy on quantities/ingredients.
     """
     source_note = " (restaurant food: use 30–40% more oil/butter than home cooking)" if source_type == "restaurant" else ""
-    messages = [{"role": "user", "content": _FOOD_DESCRIBE_PROMPT.format(text=text, source_note=source_note)}]
+    messages = [{"role": "user", "content": _FOOD_DESCRIBE_PROMPT.format(text=text, source_note=source_note) + _lang_note(lang)}]
     response = await _chat(_VISION_MODEL, messages, api_key=api_key, system=_FOOD_SYSTEM)
     return _parse_json(response)
 
