@@ -20,11 +20,14 @@ class SleepThresholds(BaseModel):
 
 
 class FeatureFlags(BaseModel):
-    """Optional tracking features — all default off. GymPulse's core is nutrition tracking."""
+    """Optional tracking features. The core is nutrition; weight/sleep/photos default off.
+    Gym and supplements default on because the daily check-in asked about them before these existed."""
     weight_tracking: bool = False
     sleep_tracking: bool = False
     progress_photos: bool = False
     health_sync: bool = False
+    gym_tracking: bool = True
+    supplement_tracking: bool = True
 
 
 class ProfileCreate(BaseModel):
