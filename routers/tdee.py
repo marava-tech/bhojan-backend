@@ -58,6 +58,25 @@ async def _gather_data(db, user_id: str, end: date | None = None) -> tuple[dict,
     return intake_by_date, weight_by_date, weekly_avgs
 
 
+_MIN_WEARABLE_DAYS = 7
+
+
+async def _with_wearable(db, user_id: str, insight: dict, end: date | None = None) -> dict:
+    """Attach the wearable-measured burn; when logs + weigh-ins are too thin for the adaptive
+    estimate, the wearable average becomes the maintenance figure the suggestion works from."""
+    end = end or datetime.now(timezone.utc).date()
+    docs = await db.energy_burned.find(
+        {"user_id": user_id, "date": {"$gte": (end - timedelta(days=_WINDOW_DAYS)).isoformat(), "$lte": end.isoformat()}},
+        {"kcal": 1},
+    ).to_list(None)
+    kcal = [d["kcal"] for d in docs]
+    insight = {**insight, "wearable_days": len(kcal),
+               "wearable_tdee_kcal": round(sum(kcal) / len(kcal)) if kcal else None}
+    if insight["confidence"] == "insufficient" and len(kcal) >= _MIN_WEARABLE_DAYS:
+        insight.update(real_tdee_kcal=insight["wearable_tdee_kcal"], confidence="wearable")
+    return insight
+
+
 @router.get("/insight")
 async def get_tdee_insight(user_id: str = Depends(get_current_user)):
     """Return real-TDEE insight + suggestion for the current user."""
@@ -67,7 +86,7 @@ async def get_tdee_insight(user_id: str = Depends(get_current_user)):
         raise HTTPException(404, "Profile not found")
 
     intake_by_date, weight_by_date, weekly_avgs = await _gather_data(db, user_id)
-    insight = compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS)
+    insight = await _with_wearable(db, user_id, compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS))
     is_plateau = detect_plateau(weekly_avgs)
     suggestion = build_suggestion(insight, profile, is_plateau=is_plateau)
 
@@ -89,7 +108,7 @@ async def apply_tdee_suggestion(user_id: str = Depends(get_current_user)):
         raise HTTPException(404, "Profile not found")
 
     intake_by_date, weight_by_date, weekly_avgs = await _gather_data(db, user_id)
-    insight = compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS)
+    insight = await _with_wearable(db, user_id, compute_real_tdee(intake_by_date, weight_by_date, window_days=_WINDOW_DAYS))
     is_plateau = detect_plateau(weekly_avgs)
     suggestion = build_suggestion(insight, profile, is_plateau=is_plateau)
 
@@ -97,6 +116,7 @@ async def apply_tdee_suggestion(user_id: str = Depends(get_current_user)):
         raise HTTPException(400, "No actionable suggestion available right now.")
 
     new_goal = suggestion["suggested_goal_kcal"]
+    source = "wearable" if insight["confidence"] == "wearable" else "adaptive"
     real_tdee = insight.get("real_tdee_kcal")
 
     await db.user_profile.update_one(
@@ -104,18 +124,18 @@ async def apply_tdee_suggestion(user_id: str = Depends(get_current_user)):
         {"$set": {
             "goal_kcal": new_goal,
             "real_tdee_kcal": real_tdee,
-            "tdee_source": "adaptive",
+            "tdee_source": source,
             "updated_at": datetime.now(timezone.utc),
         }},
     )
     updated_profile = await db.user_profile.find_one({"user_id": user_id})
     await snapshot_goal_history(db, user_id, updated_profile)
 
-    logger.info("User %s applied adaptive TDEE: goal=%s real_tdee=%s", user_id, new_goal, real_tdee)
+    logger.info("User %s applied %s TDEE: goal=%s real_tdee=%s", user_id, source, new_goal, real_tdee)
     return {
         "goal_kcal": new_goal,
         "real_tdee_kcal": real_tdee,
-        "tdee_source": "adaptive",
+        "tdee_source": source,
         "suggestion_type": suggestion["type"],
         "message": suggestion["message"],
     }
