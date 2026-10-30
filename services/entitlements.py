@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException
 
 from auth import get_current_user
 from database import get_db
+from services import ai_quota
 
 ENTITLEMENT = os.environ.get("REVENUECAT_ENTITLEMENT", "premium")
 
@@ -61,8 +62,8 @@ async def apply_event(db, event: dict) -> bool:
 
 
 async def require_premium(user_id: str = Depends(get_current_user)) -> None:
-    """Dependency for premium-only endpoints."""
-    if await is_premium(get_db(), user_id):
+    """Dependency for premium-only endpoints. New accounts get a free trial (ai_quota.TRIAL_DAYS)."""
+    if ai_quota.trial_ends_at(user_id) or await is_premium(get_db(), user_id):
         return
     raise HTTPException(403, detail={
         "code": "premium_required",

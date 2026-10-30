@@ -39,12 +39,14 @@ async def main():
     except HTTPException as e:
         assert e.status_code == 429
 
-    # welcome boost: account < 7 days old gets 8/day, older gets 3
+    # trial: ObjectId made now => premium; made 10 days ago => free (5/day)
+    from bson import ObjectId
     from datetime import datetime, timedelta, timezone
-    new = {"created_at": datetime.now(timezone.utc) - timedelta(days=2)}
-    old = {"created_at": datetime.now(timezone.utc) - timedelta(days=30)}
-    assert (await ai_quota.status(db, "n1", new))["limit"] == 8
-    assert (await ai_quota.status(db, "n2", old))["limit"] == 3
+    fresh = str(ObjectId())
+    stale = str(ObjectId.from_datetime(datetime.now(timezone.utc) - timedelta(days=10)))
+    assert (await ai_quota.status(db, fresh, None))["premium"]
+    st = await ai_quota.status(db, stale, None)
+    assert not st["premium"] and st["limit"] == 5 and st["trial_ends_at"] is None, st
 
     # gate: handler raising refunds; retry-with-model is free
     async def run_gate(gate_gen, fail):
