@@ -18,7 +18,7 @@ from auth import get_current_user
 from database import get_db
 
 FREE_DAILY = int(os.environ.get("AI_FREE_SCANS_PER_DAY", "5"))
-PREMIUM_DAILY = int(os.environ.get("AI_PREMIUM_SCANS_PER_DAY", "25"))
+PREMIUM_DAILY = int(os.environ.get("AI_PREMIUM_SCANS_PER_DAY", "15"))  # priced for a 10% margin at this cap (see the app repo .product/ECONOMICS.md)
 MAX_REWARDS_PER_DAY = int(os.environ.get("AI_MAX_REWARDS_PER_DAY", "5"))
 TRIAL_DAYS = int(os.environ.get("PREMIUM_TRIAL_DAYS", "3"))
 
