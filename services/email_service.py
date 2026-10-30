@@ -1,6 +1,7 @@
 """Gmail SMTP OTP email sender."""
 import os
 import logging
+from email.message import EmailMessage
 from email.mime.text import MIMEText
 from email.utils import formataddr
 
@@ -40,3 +41,29 @@ async def send_otp(to_email: str, otp: str) -> None:
         start_tls=True,
     )
     logger.info("OTP email sent to %s", to_email)
+
+
+async def send_export(to_email: str, files: dict[str, bytes]) -> None:
+    """Email the user a copy of their data. `files` maps filename -> bytes."""
+    if not _enabled:
+        logger.info("Email disabled — data export for %s: %s", to_email, list(files))
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = "Your Bhojan data export"
+    msg["From"] = formataddr(("Bhojan", _from))
+    msg["To"] = to_email
+    msg.set_content(
+        "Attached is a copy of the data in your Bhojan account: your profile, food diary, "
+        "supplements, sleep and weight logs.\n\n"
+        "food_logs.csv opens in any spreadsheet app. bhojan_data.json has everything.\n"
+        "If you didn't request this, you can ignore this email.\n"
+    )
+    for name, data in files.items():
+        maintype, subtype = ("text", "csv") if name.endswith(".csv") else ("application", "json")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
+
+    await aiosmtplib.send(
+        msg, hostname=_host, port=_port, username=_username, password=_password, start_tls=True,
+    )
+    logger.info("Data export emailed to %s", to_email)

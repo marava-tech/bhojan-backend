@@ -32,6 +32,7 @@ def _check_env():
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 from routers import (
+    account,
     ai_quota as ai_quota_router,
     billing,
     insights,
@@ -201,6 +202,7 @@ async def _openrouter_error(request: Request, exc: httpx.HTTPStatusError):
 
 
 app.include_router(auth_router.router)
+app.include_router(account.router)
 app.include_router(profile.router)
 app.include_router(food.router)
 app.include_router(saved_meals.router)
