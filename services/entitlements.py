@@ -62,8 +62,9 @@ async def apply_event(db, event: dict) -> bool:
 
 
 async def require_premium(user_id: str = Depends(get_current_user)) -> None:
-    """Dependency for premium-only endpoints. New accounts get a free trial (ai_quota.TRIAL_DAYS)."""
-    if ai_quota.trial_ends_at(user_id) or await is_premium(get_db(), user_id):
+    """Dependency for premium-only endpoints. Users who opted in get a free trial (ai_quota.TRIAL_DAYS)."""
+    db = get_db()
+    if await ai_quota.trial_ends_at(db, user_id) or await is_premium(db, user_id):
         return
     raise HTTPException(403, detail={
         "code": "premium_required",

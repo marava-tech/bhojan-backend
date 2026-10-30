@@ -15,6 +15,15 @@ async def get_quota(user_id: str = Depends(get_current_user)):
     return await ai_quota.status(db, user_id, profile)
 
 
+@router.post("/trial")
+async def start_trial(user_id: str = Depends(get_current_user)):
+    """User chose the free Premium trial (no card). Once per account."""
+    db = get_db()
+    await ai_quota.start_trial(db, user_id)
+    profile = await db.user_profile.find_one({"user_id": user_id})
+    return await ai_quota.status(db, user_id, profile)
+
+
 @router.post("/reward")
 async def claim_reward(user_id: str = Depends(get_current_user)):
     """Call after the user finishes a rewarded ad: +1 scan for today."""

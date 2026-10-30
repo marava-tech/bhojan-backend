@@ -39,14 +39,22 @@ async def main():
     except HTTPException as e:
         assert e.status_code == 429
 
-    # trial: ObjectId made now => premium; made 10 days ago => free (5/day)
+    # trial: opt-in, once. Never automatic.
     from bson import ObjectId
     from datetime import datetime, timedelta, timezone
-    fresh = str(ObjectId())
-    stale = str(ObjectId.from_datetime(datetime.now(timezone.utc) - timedelta(days=10)))
-    assert (await ai_quota.status(db, fresh, None))["premium"]
-    st = await ai_quota.status(db, stale, None)
-    assert not st["premium"] and st["limit"] == 3 and st["trial_ends_at"] is None, st
+    await db.users.delete_many({})
+    uid = ObjectId()
+    await db.users.insert_one({"_id": uid})
+    t = str(uid)
+    st = await ai_quota.status(db, t, None)
+    assert not st["premium"] and st["trial_available"] and st["trial_ends_at"] is None, st
+    await ai_quota.start_trial(db, t)
+    st = await ai_quota.status(db, t, None)
+    assert st["premium"] and st["trial_ends_at"] and not st["trial_available"], st
+    await db.users.update_one({"_id": uid}, {"$set": {"trial_started_at": datetime.now(timezone.utc) - timedelta(days=10)}})
+    await ai_quota.start_trial(db, t)  # no restart
+    st = await ai_quota.status(db, t, None)
+    assert not st["premium"] and not st["trial_available"], st
 
     # gate: handler raising refunds; retry-with-model is free
     async def run_gate(gate_gen, fail):
