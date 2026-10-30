@@ -1,4 +1,4 @@
-name: Deploy gympulse-backend
+name: Deploy bhojan-backend
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: gympulse-backend-deploy-${{ github.ref }}
+  group: bhojan-backend-deploy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,13 +34,13 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/marava-tech/gympulse-backend:latest
+          tags: ghcr.io/marava-tech/bhojan-backend:latest
           cache-from: |
             type=gha
-            type=registry,ref=ghcr.io/marava-tech/gympulse-backend:buildcache
+            type=registry,ref=ghcr.io/marava-tech/bhojan-backend:buildcache
           cache-to: |
             type=gha,mode=max
-            type=registry,ref=ghcr.io/marava-tech/gympulse-backend:buildcache,mode=max
+            type=registry,ref=ghcr.io/marava-tech/bhojan-backend:buildcache,mode=max
           provenance: false
 
   deploy:
@@ -54,8 +54,8 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            docker pull ghcr.io/marava-tech/gympulse-backend:latest
-            docker rm -f gympulse-backend 2>/dev/null || true
-            cd /root/server/services/gympulse-backend
-            docker compose --env-file ../../.env up -d --no-deps --pull never gympulse-backend
+            docker pull ghcr.io/marava-tech/bhojan-backend:latest
+            docker rm -f bhojan-backend 2>/dev/null || true
+            cd /root/server/services/bhojan-backend
+            docker compose --env-file ../../.env up -d --no-deps --pull never bhojan-backend
             docker image prune -f

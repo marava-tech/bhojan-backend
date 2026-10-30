@@ -1,6 +1,6 @@
-# GymPulse Backend
+# Bhojan Backend
 
-FastAPI backend for the GymPulse AI fitness tracker.
+FastAPI backend for the Bhojan (Indian calorie counter).
 
 ## What It Does
 
