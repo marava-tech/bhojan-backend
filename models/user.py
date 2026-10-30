@@ -14,6 +14,7 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     is_new_user: bool = False
+    has_profile: bool = False
 
 
 class UsernameUpdate(BaseModel):
