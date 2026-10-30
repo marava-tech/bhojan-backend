@@ -23,12 +23,12 @@ async def send_otp(to_email: str, otp: str) -> None:
 
     # Plain text only: a bare, short message is the least likely to be filtered as spam.
     msg = MIMEText(
-        f"Your Snapfit AI verification code is {otp}\n\n"
+        f"Your Bhojan verification code is {otp}\n\n"
         f"It expires in 5 minutes. If you didn't request it, ignore this email.\n",
         "plain",
     )
-    msg["Subject"] = "Your Snapfit AI verification code"
-    msg["From"] = formataddr(("Snapfit AI", _from))
+    msg["Subject"] = "Your Bhojan verification code"
+    msg["From"] = formataddr(("Bhojan", _from))
     msg["To"] = to_email
 
     await aiosmtplib.send(

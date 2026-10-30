@@ -64,7 +64,7 @@ async def lookup_barcode(code: str) -> Optional[dict]:
     Result: {name, brand, per_100g: {calories_kcal, protein_g, carbs_g, fat_g}, serving_g, image_url}"""
     params = {"fields": "product_name,product_name_en,brands,nutriments,serving_quantity,image_front_small_url"}
     try:
-        async with httpx.AsyncClient(timeout=8.0, headers={"User-Agent": "SnapfitAI/1.0 (tech.marava@gmail.com)"}) as client:
+        async with httpx.AsyncClient(timeout=8.0, headers={"User-Agent": "Bhojan/1.0 (tech.marava@gmail.com)"}) as client:
             resp = await client.get(OFF_PRODUCT_URL.format(code=code), params=params)
             if resp.status_code == 404:
                 return None
