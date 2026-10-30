@@ -67,6 +67,8 @@ async def status(db, user_id: str, profile: dict | None) -> dict:
         "premium": premium,
         "trial_ends_at": (t.isoformat() if (t := trial_ends_at(user_id)) else None),
         "limit": limit,
+        "free_limit": FREE_DAILY,        # so the paywall quotes the real numbers if the env changes them
+        "premium_limit": PREMIUM_DAILY,
         "used": doc["used"],
         "remaining": max(limit - doc["used"], 0),
         "rewards_left": max(MAX_REWARDS_PER_DAY - doc["rewards"], 0),
