@@ -46,7 +46,7 @@ async def main():
     stale = str(ObjectId.from_datetime(datetime.now(timezone.utc) - timedelta(days=10)))
     assert (await ai_quota.status(db, fresh, None))["premium"]
     st = await ai_quota.status(db, stale, None)
-    assert not st["premium"] and st["limit"] == 5 and st["trial_ends_at"] is None, st
+    assert not st["premium"] and st["limit"] == 3 and st["trial_ends_at"] is None, st
 
     # gate: handler raising refunds; retry-with-model is free
     async def run_gate(gate_gen, fail):
