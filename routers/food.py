@@ -45,33 +45,49 @@ async def _resolve_macros(
         cooking_method=cooking_method, source_type=source_type,
     )
     ai_result["source"] = "ai_estimated"
-
-    # Blend in user's personal correction if one exists for this food name
     if user_id:
-        name_norm = name.strip().lower()
-        db = get_db()
-        correction = await db.food_corrections.find_one({"user_id": user_id, "name_norm": name_norm})
-        if correction:
-            count = correction.get("count", 1)
-            # Weight blend toward correction proportional to confidence (capped at 0.6 after 5+ edits)
-            blend_weight = min(0.12 * count, 0.60)
-            corr = correction["corrected_per_g"]
-
-            def _apply(ai_val: float, corr_per_g: float, w: float) -> float:
-                corrected = corr_per_g * weight_g
-                delta_ratio = (corrected - ai_val) / ai_val if ai_val else 0.0
-                # Cap blend delta at ±_CORRECTION_MAX_BLEND to prevent runaway
-                clamped_delta = max(-_CORRECTION_MAX_BLEND, min(_CORRECTION_MAX_BLEND, delta_ratio))
-                return round(ai_val * (1 + clamped_delta * w), 1)
-
-            if ai_result.get("calories_kcal", 0) > 0:
-                ai_result["calories_kcal"] = _apply(ai_result["calories_kcal"], corr["cal_per_g"], blend_weight)
-                ai_result["protein_g"] = _apply(ai_result["protein_g"], corr["protein_per_g"], blend_weight)
-                ai_result["carbs_g"] = _apply(ai_result["carbs_g"], corr["carbs_per_g"], blend_weight)
-                ai_result["fat_g"] = _apply(ai_result["fat_g"], corr["fat_per_g"], blend_weight)
-                ai_result["personalized"] = True
-
+        await _personalize(ai_result, name, weight_g, user_id)
     return ai_result
+
+
+async def _personalize(macros: dict, name: str, weight_g: float, user_id: str) -> None:
+    """Blend in the user's past corrections for this food name, in place."""
+    correction = await get_db().food_corrections.find_one({"user_id": user_id, "name_norm": name.strip().lower()})
+    if not correction or not macros.get("calories_kcal"):
+        return
+    # Weight blend toward correction proportional to confidence (capped at 0.6 after 5+ edits)
+    blend_weight = min(0.12 * correction.get("count", 1), 0.60)
+    corr = correction["corrected_per_g"]
+
+    def _apply(ai_val: float, corr_per_g: float) -> float:
+        corrected = corr_per_g * weight_g
+        delta_ratio = (corrected - ai_val) / ai_val if ai_val else 0.0
+        # Cap blend delta at ±_CORRECTION_MAX_BLEND to prevent runaway
+        clamped_delta = max(-_CORRECTION_MAX_BLEND, min(_CORRECTION_MAX_BLEND, delta_ratio))
+        return round(ai_val * (1 + clamped_delta * blend_weight), 1)
+
+    for key, corr_key in (("calories_kcal", "cal_per_g"), ("protein_g", "protein_per_g"),
+                          ("carbs_g", "carbs_per_g"), ("fat_g", "fat_per_g")):
+        macros[key] = _apply(float(macros.get(key) or 0), corr[corr_key])
+    macros["personalized"] = True
+
+
+async def _price_items(items: list[dict], api_key: str, user_id: str, source_type: str | None = None) -> list[dict]:
+    """Items from a single-call analysis already carry macros; apply personal corrections.
+    An item the model returned without calories falls back to the per-item lookup."""
+    async def one(item: dict) -> dict:
+        weight = float(item.get("estimated_weight_g") or 0)
+        if item.get("calories_kcal") is None or weight <= 0:
+            macros = await _resolve_macros(item["name"], weight or 100.0, api_key,
+                                           cooking_method=item.get("cooking_method"),
+                                           source_type=source_type, user_id=user_id)
+            return {**item, **macros}
+        macros = {k: round(float(item.get(k) or 0), 1) for k in ("calories_kcal", "protein_g", "carbs_g", "fat_g")}
+        macros["source"] = "ai_estimated"
+        await _personalize(macros, item["name"], weight, user_id)
+        return {**item, **macros}
+
+    return await asyncio.gather(*[one(i) for i in items])
 
 
 async def _capture_corrections(items: list, user_id: str, db) -> None:
@@ -252,17 +268,7 @@ async def analyze_food(
                 "overlap": round(best_overlap, 2),
             }
 
-    # Resolve macros for all detected items in parallel (with personalized correction blend)
-    macro_list = await asyncio.gather(*[
-        _resolve_macros(
-            item["name"],
-            item["estimated_weight_g"],
-            api_key,
-            cooking_method=item.get("cooking_method"),
-            user_id=user_id,
-        ) for item in items
-    ])
-    enriched_items = [{**item, **macros} for item, macros in zip(items, macro_list)]
+    enriched_items = await _price_items(items, api_key, user_id)
 
     return {
         "items": enriched_items,
@@ -291,24 +297,13 @@ async def describe_food(
     if not api_key:
         raise HTTPException(402, "Set your OpenRouter API key in Settings to use AI features")
 
-    parsed = await gemini_svc.describe_food(text, api_key=api_key)
+    source_type = body.source_type.value if body.source_type else None
+    parsed = await gemini_svc.describe_food(text, api_key=api_key, source_type=source_type)
     items = parsed.get("items", [])
     if not items:
         raise HTTPException(422, "Couldn't identify any food items in that description")
 
-    # Resolve macros for all detected items in parallel (with personalized correction blend)
-    source_type = body.source_type.value if body.source_type else None
-    macro_list = await asyncio.gather(*[
-        _resolve_macros(
-            item["name"],
-            item["estimated_weight_g"],
-            api_key,
-            cooking_method=item.get("cooking_method"),
-            source_type=source_type,
-            user_id=user_id,
-        ) for item in items
-    ])
-    enriched_items = [{**item, **macros} for item, macros in zip(items, macro_list)]
+    enriched_items = await _price_items(items, api_key, user_id, source_type)
 
     return {"items": enriched_items}
 

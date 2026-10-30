@@ -81,10 +81,10 @@ _FOOD_SYSTEM = (
 
 _FOOD_ANALYZE_PROMPT = """Analyze this food photo with high precision. Identify every distinct food item visible.
 
-Weight estimation guidelines:
-- Reference: standard dinner plate ≈ 26cm diameter, side plate ≈ 20cm, standard bowl ≈ 400–600ml
-- Common anchors: cooked rice (1 cup ≈ 200g), chicken breast (medium ≈ 160g), bread slice ≈ 30g, egg ≈ 55g, banana (medium ≈ 120g)
-- For Indian food: 1 roti ≈ 40g, 1 cup dal ≈ 250g, 1 cup sabzi ≈ 200g, 1 serving rice ≈ 150–200g
+Weight estimation (CRITICAL):
+- Estimate each item's weight from what you actually see — its area, height and volume relative to
+  the plate, bowl, cutlery, hand or packaging. Do NOT assume a standard serving size; a small or large
+  portion must stay small or large in your estimate.
 - Factor in cooking method: fried items are denser, boiled/steamed have more water weight
 
 Scale reading rules (CRITICAL):
@@ -106,12 +106,22 @@ Cooking method classification (REQUIRED per item):
 - Visibly oily/crispy coating or batter → "deep_fried"; light pan-sear/sauté sheen → "fried"
 - Char marks or grill lines → "grilled"; no visible fat/oil and matte surface (idli, boiled egg, steamed rice) → "boiled" or "steamed"
 
+Nutrition per item (for estimated_weight_g as served):
+- Use food composition data (IFCT 2017 for Indian food, USDA otherwise), cooked values for cooked food.
+- Include absorbed cooking oil/ghee/butter in the item's fat and calories — Indian curries, sabzi,
+  dal tadka and fries carry hidden fat you cannot see; packaged items use label values.
+- Check protein_g*4 + carbs_g*4 + fat_g*9 ≈ calories_kcal per item.
+
 Return ONLY valid JSON, no explanation, no markdown:
-{"items": [{"name": "string", "estimated_weight_g": number, "cooking_method": "string"}], "scale_weight_g": number or null}"""
+{"items": [{"name": "string", "estimated_weight_g": number, "cooking_method": "string",
+"calories_kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number}],
+"scale_weight_g": number or null}"""
 
 
 async def analyze_food(image_bytes: bytes, api_key: str, model: str | None = None) -> dict:
-    """Return {items: [{name, estimated_weight_g}], scale_weight_g: float|None}"""
+    """Return {items: [{name, estimated_weight_g, cooking_method, calories_kcal, protein_g, carbs_g, fat_g}],
+    scale_weight_g: float|None}. One call that sees the image and prices it — scripts/eval_accuracy.py
+    showed this beats identifying first and pricing the name in a second text call."""
     messages = [{"role": "user", "content": [
         {"type": "text", "text": _FOOD_ANALYZE_PROMPT},
         {"type": "image_url", "image_url": {"url": _img_url(image_bytes)}},
@@ -144,17 +154,25 @@ Cooking method classification (REQUIRED per item):
   uncooked items (salad, fruit, raw vegetables).
 - A standalone added-fat item (oil/ghee/butter) should use cooking_method "raw" (it isn't cooked itself).
 
+Nutrition per item (for estimated_weight_g):
+- Use food composition data (IFCT 2017 for Indian food, USDA otherwise), cooked values for cooked food.
+- Unless the user listed the oil/ghee separately, include typical cooking fat in curries, sabzi, dal
+  tadka and fried items{source_note}.
+- Check protein_g*4 + carbs_g*4 + fat_g*9 ≈ calories_kcal per item.
+
 Return ONLY valid JSON, no explanation, no markdown:
-{{"items": [{{"name": "string", "estimated_weight_g": number, "cooking_method": "string"}}]}}"""
+{{"items": [{{"name": "string", "estimated_weight_g": number, "cooking_method": "string",
+"calories_kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number}}]}}"""
 
 
-async def describe_food(text: str, api_key: str) -> dict:
-    """Parse a free-text meal description into {items: [{name, estimated_weight_g, cooking_method}]}.
+async def describe_food(text: str, api_key: str, source_type: str | None = None) -> dict:
+    """Parse a free-text meal description into {items: [{name, estimated_weight_g, cooking_method, macros...}]}.
 
     Text-only counterpart to analyze_food — used by the "describe" logging option (no photo).
     Runs on the vision model for maximum extraction accuracy on quantities/ingredients.
     """
-    messages = [{"role": "user", "content": _FOOD_DESCRIBE_PROMPT.format(text=text)}]
+    source_note = " (restaurant food: use 30–40% more oil/butter than home cooking)" if source_type == "restaurant" else ""
+    messages = [{"role": "user", "content": _FOOD_DESCRIBE_PROMPT.format(text=text, source_note=source_note)}]
     response = await _chat(_VISION_MODEL, messages, api_key=api_key, system=_FOOD_SYSTEM)
     return _parse_json(response)
 
