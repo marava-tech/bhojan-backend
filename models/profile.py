@@ -88,4 +88,4 @@ class TDEEResult(BaseModel):
     carbs_g: int
     fat_g: int
     real_tdee_kcal: Optional[int] = None  # adaptive, derived from intake+weight data
-    tdee_source: str = "formula"          # "formula" | "adaptive" | "wearable"
+    tdee_source: str = "formula"          # "formula" | "adaptive"
