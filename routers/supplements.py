@@ -138,7 +138,7 @@ async def set_supplement_taken(body: SupplementLogSet, user_id: str = Depends(ge
         raise HTTPException(404, "Supplement not found")
 
     key = {"supplement_id": body.supplement_id, "date": body.date, "user_id": user_id}
-    if body.taken:
+    if body.taken and body.units_taken > 0:
         now = datetime.now(timezone.utc)
         await db.supplement_logs.update_one(
             key,
@@ -151,7 +151,8 @@ async def set_supplement_taken(body: SupplementLogSet, user_id: str = Depends(ge
 
     await _update_supplement_streak(body.supplement_id, user_id, db)
     totals = await _rebuild_day(db, user_id, body.date)
-    return {"date": body.date, "supplement_id": body.supplement_id, "taken": body.taken, "supplement_totals": totals}
+    return {"date": body.date, "supplement_id": body.supplement_id, "taken": body.taken and body.units_taken > 0,
+            "supplement_totals": totals}
 
 
 @router.post("/logs", status_code=201)
@@ -199,6 +200,11 @@ async def get_supplement_logs(date_str: str, user_id: str = Depends(get_current_
     logs = await db.supplement_logs.find({"date": date_str, "user_id": user_id}).to_list(None)
     logs_by_id = {l["supplement_id"]: l for l in logs}
     taken_ids = set(logs_by_id.keys())
+    # Usual servings per supplement = the most recent log, so the app can start a new day at "what you took last time".
+    last_units: dict[str, float] = {}
+    recent = await db.supplement_logs.find({"user_id": user_id}).sort("date", -1).limit(300).to_list(None)
+    for l in recent:
+        last_units.setdefault(l["supplement_id"], l.get("units_taken") or 1)
 
     today_weekday = date.fromisoformat(date_str).weekday()  # 0=Mon
 
@@ -219,6 +225,7 @@ async def get_supplement_logs(date_str: str, user_id: str = Depends(get_current_
             "timing": s.get("timing"),
             "taken": sid in taken_ids,
             "units_taken": log["units_taken"] if log else 0,
+            "last_units": last_units.get(sid, 1),
             "current_streak": s.get("current_streak", 0),
             "best_streak": s.get("best_streak", 0),
             "calories_per_unit": s.get("calories_per_unit", 0.0),
