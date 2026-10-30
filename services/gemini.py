@@ -177,6 +177,30 @@ async def describe_food(text: str, api_key: str, source_type: str | None = None)
     return _parse_json(response)
 
 
+_LABEL_PROMPT = """This is a photo of a packaged food's nutrition label (often an Indian FSSAI label).
+Read the printed values exactly — do not estimate or round.
+
+- Use the per 100 g (or per 100 ml) column. If only a per-serving column exists, convert it to per
+  100 g using the printed serving size.
+- Energy in kcal (convert kJ by dividing by 4.184 if only kJ is printed).
+- serving_g: the printed serving size in grams or ml, or null if none.
+- name: the product name if visible on the photo, else null.
+- If this is not a readable nutrition label, return {"error": "not_a_label"}.
+
+Return ONLY JSON:
+{"name": string|null, "per_100g": {"calories_kcal": number, "protein_g": number, "carbs_g": number,
+"fat_g": number}, "serving_g": number|null}"""
+
+
+async def read_nutrition_label(image_bytes: bytes, api_key: str) -> dict:
+    """Read per-100g values off a nutrition-label photo — the fallback for barcodes OpenFoodFacts lacks."""
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": _LABEL_PROMPT},
+        {"type": "image_url", "image_url": {"url": _img_url(image_bytes)}},
+    ]}]
+    return _parse_json(await _chat(_VISION_MODEL, messages, api_key=api_key))
+
+
 _BODY_SYSTEM = (
     "You are a certified physique assessment specialist with expertise in visual body composition analysis. "
     "You provide objective, calibrated body fat percentage estimates based on visible muscle definition, "

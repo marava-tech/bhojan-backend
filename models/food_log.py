@@ -18,6 +18,7 @@ class MealSlot(str, Enum):
 class MacroSource(str, Enum):
     database = "database"
     ai_estimated = "ai_estimated"
+    barcode = "barcode"  # pack label values via barcode (OpenFoodFacts or a scanned label)
 
 
 class CookingMethod(str, Enum):
