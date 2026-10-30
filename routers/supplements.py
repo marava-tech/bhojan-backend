@@ -1,16 +1,18 @@
 """Supplement tracker — presets + daily logs + streaks + correlation."""
 import logging
 from datetime import date, datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from bson import ObjectId
 from typing import Optional
 
 from auth import get_current_user
 from database import get_db
 from models.supplement import SupplementCreate, SupplementPatch, SupplementLogCreate, SupplementLogSet
+from services import ai_quota
+from services import gemini as gemini_svc
 from services.supplement_presets import PRESETS
 from services.streak_calc import consecutive_days
-from utils import parse_object_id
+from utils import get_openrouter_key, parse_object_id, validate_image_upload
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,44 @@ async def delete_supplement(supp_id: str, user_id: str = Depends(get_current_use
 async def list_presets():
     """Popular supplements with a typical serving and macros, for one-tap adding."""
     return PRESETS
+
+
+@router.post("/read-label")
+async def read_supplement_label(
+    photo: UploadFile = File(...),
+    user_id: str = Depends(get_current_user),
+    _quota: None = Depends(ai_quota.scan_gate),
+):
+    """Read a supplement tub's nutrition label into the add-supplement form: one serving's size and macros."""
+    db = get_db()
+    image_bytes = await photo.read()
+    validate_image_upload(image_bytes, photo.filename or "", photo.content_type)
+    api_key = get_openrouter_key(await db.user_profile.find_one({"user_id": user_id}))
+    if not api_key:
+        raise HTTPException(402, "Set your OpenRouter API key in Settings to use AI features")
+
+    data = await gemini_svc.read_nutrition_label(image_bytes, api_key=api_key)
+    per = data.get("per_100g") or {}
+    try:
+        per = {k: float(per[k]) for k in ("calories_kcal", "protein_g", "carbs_g", "fat_g")}
+    except (KeyError, TypeError, ValueError):
+        per = None
+    # 0 kcal is fine here (creatine, vitamins); negative or absurd values mean a misread.
+    if data.get("error") or not per or not (0 <= per["calories_kcal"] <= 950) or min(per.values()) < 0:
+        raise HTTPException(422, "Couldn't read that label. Try a closer, sharper photo of the nutrition table.")
+
+    serving = data.get("serving_g")
+    serving = float(serving) if isinstance(serving, (int, float)) and serving > 0 else 100.0
+    scale = serving / 100
+    return {
+        "name": data.get("name"),
+        "dose_amount": round(serving, 1),
+        "dose_unit": "g",
+        "calories_per_unit": round(per["calories_kcal"] * scale, 1),
+        "protein_per_unit": round(per["protein_g"] * scale, 1),
+        "carbs_per_unit": round(per["carbs_g"] * scale, 1),
+        "fat_per_unit": round(per["fat_g"] * scale, 1),
+    }
 
 
 # ─── Supplement logs ─────────────────────────────────────────────────────────
