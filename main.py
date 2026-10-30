@@ -49,6 +49,7 @@ from routers import (
     weight_photos,
     streaks,
     summary,
+    progress,
     notifications,
     daily_checkin,
     tdee as tdee_router,
@@ -170,6 +171,7 @@ app.include_router(sleep.router)
 app.include_router(weight_photos.router)
 app.include_router(streaks.router)
 app.include_router(summary.router)
+app.include_router(progress.router)
 app.include_router(notifications.router)
 app.include_router(daily_checkin.router)
 app.include_router(tdee_router.router)
