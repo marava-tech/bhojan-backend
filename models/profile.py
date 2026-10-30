@@ -86,8 +86,6 @@ class ProfilePatch(BaseModel):
     target_weight_kg: Optional[float] = None
     disabled_meal_slots: Optional[List[str]] = None  # e.g. ["breakfast"]
     feature_flags: Optional[FeatureFlags] = None
-    # True = drop saved goal overrides (and the retired gym/rest goals) and go back to the calculated targets.
-    reset_goal_overrides: Optional[bool] = None
 
 
 class TDEEResult(BaseModel):

@@ -64,8 +64,7 @@ async def get_profile(user_id: str = Depends(get_current_user)):
 async def patch_profile(body: ProfilePatch, user_id: str = Depends(get_current_user)):
     db = get_db()
     update_data = dict(body.model_dump(exclude_unset=True))
-    reset_goals = bool(update_data.pop("reset_goal_overrides", False))
-    if not update_data and not reset_goals:
+    if not update_data:
         raise HTTPException(400, "No fields provided")
 
     doc = await db.user_profile.find_one({"user_id": user_id})
@@ -85,12 +84,6 @@ async def patch_profile(body: ProfilePatch, user_id: str = Depends(get_current_u
     #   and is NOT changing it this time → restore the saved value so TDEE recalc doesn't wipe it.
     macro_fields = ("goal_kcal", "protein_g", "carbs_g", "fat_g")
     existing_overrides: set[str] = set(doc.get("goal_overrides") or [])
-    if reset_goals:
-        existing_overrides = set()
-        # Retired gym/rest day goals would otherwise keep winning over the reset values.
-        for f in ("gym_goal_kcal", "gym_protein_g", "gym_carbs_g", "gym_fat_g",
-                  "rest_goal_kcal", "rest_protein_g", "rest_carbs_g", "rest_fat_g"):
-            update_data[f] = None
 
     for field in macro_fields:
         if field in update_data:
