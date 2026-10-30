@@ -1,8 +1,12 @@
+import hashlib
+import hmac
+import os
 import random
 import string
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
+from pymongo import ReturnDocument
 from bson import ObjectId
 
 from database import get_db
@@ -13,6 +17,7 @@ from services.email_service import send_otp as send_otp_email
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 _OTP_TTL_MINUTES = 5
+_OTP_MAX_ATTEMPTS = 5
 
 # Play Store reviewer login — accepts a fixed OTP so review can proceed without
 # needing to receive a real email. No other account gets this bypass.
@@ -21,7 +26,12 @@ _REVIEWER_OTP = "000000"
 
 
 def _generate_otp() -> str:
-    return "".join(random.choices(string.digits, k=6))
+    return "".join(random.SystemRandom().choices(string.digits, k=6))
+
+
+def _hash_otp(email: str, otp: str) -> str:
+    """Keyed hash, so a leaked otp_requests row doesn't reveal a live code."""
+    return hmac.new(os.environ["JWT_SECRET"].encode(), f"{email}:{otp}".encode(), hashlib.sha256).hexdigest()
 
 
 _OTP_RESEND_COOLDOWN_SECONDS = 60
@@ -52,7 +62,8 @@ async def send_otp(body: SendOtpRequest):
     await db.otp_requests.delete_many({"email": email})
     await db.otp_requests.insert_one({
         "email": email,
-        "otp": otp,
+        "otp_hash": _hash_otp(email, otp),
+        "attempts": 0,
         "expires_at": expires_at,
         "created_at": datetime.now(timezone.utc),
     })
@@ -72,9 +83,16 @@ async def verify_otp(body: VerifyOtpRequest):
         if otp != _REVIEWER_OTP:
             raise HTTPException(status_code=400, detail="Invalid OTP")
     else:
-        record = await db.otp_requests.find_one({"email": email})
-        if not record:
+        # Count the guess first, atomically, so parallel requests can't beat the cap.
+        record = await db.otp_requests.find_one_and_update(
+            {"email": email}, {"$inc": {"attempts": 1}}, return_document=ReturnDocument.AFTER
+        )
+        if not record or "otp_hash" not in record:
             raise HTTPException(status_code=400, detail="No OTP found — please request a new one")
+
+        if record["attempts"] > _OTP_MAX_ATTEMPTS:
+            await db.otp_requests.delete_many({"email": email})
+            raise HTTPException(status_code=429, detail="Too many wrong codes — please request a new one")
 
         expires_at = record["expires_at"]
         if expires_at.tzinfo is None:
@@ -83,7 +101,7 @@ async def verify_otp(body: VerifyOtpRequest):
             await db.otp_requests.delete_many({"email": email})
             raise HTTPException(status_code=400, detail="OTP expired — please request a new one")
 
-        if record["otp"] != otp:
+        if not hmac.compare_digest(record["otp_hash"], _hash_otp(email, otp)):
             raise HTTPException(status_code=400, detail="Invalid OTP")
 
         await db.otp_requests.delete_many({"email": email})
@@ -105,9 +123,12 @@ async def _login_or_create(db, email: str) -> Token:
     else:
         user_id = str(existing["_id"])
 
+    # Lets the app route straight to Home or onboarding without an extra /profile call
+    has_profile = not is_new and await db.user_profile.find_one({"user_id": user_id}, {"_id": 1}) is not None
     return Token(
         access_token=create_access_token(user_id),
         is_new_user=is_new,
+        has_profile=has_profile,
     )
 
 
