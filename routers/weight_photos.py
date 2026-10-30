@@ -49,7 +49,17 @@ async def upload_weight_photo(
         "user_id": user_id,
         "created_at": datetime.now(timezone.utc),
     }
-    await db.weight_photos.insert_one(doc)
+    if image_url is None:
+        # Weight-only: one entry per day, so re-logging edits today's weight instead of duplicating it.
+        await db.weight_photos.update_one(
+            {"user_id": user_id, "date": photo_date, "image_url": None},
+            {"$set": {"weight_kg": weight_kg, "updated_at": datetime.now(timezone.utc)},
+             "$setOnInsert": {"photo_id": photo_id, "created_at": doc["created_at"]}},
+            upsert=True,
+        )
+        doc = await db.weight_photos.find_one({"user_id": user_id, "date": photo_date, "image_url": None})
+    else:
+        await db.weight_photos.insert_one(doc)
     doc["_id"] = str(doc.pop("_id", photo_id))
 
     # Recalculate TDEE when weight is provided, but preserve any custom goal overrides.
