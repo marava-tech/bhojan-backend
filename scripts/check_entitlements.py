@@ -56,6 +56,8 @@ async def main():
     st = await ai_quota.status(db, "u1", profile)
     assert st["premium"] and st["limit"] == 5, st
 
+    await raises(ai_quota.grant_reward(db, "u1", profile), 400)
+
     # cancellation keeps access until expiry; expiration ends it; lapsed expires_at self-heals
     await entitlements.apply_event(db, ev("CANCELLATION")["event"])
     assert await entitlements.is_premium(db, "u1")

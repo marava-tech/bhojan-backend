@@ -1,4 +1,6 @@
-"""Per-user daily quota for AI scans (server OpenRouter key). Free vs Premium only, no ads.
+"""Per-user daily quota for AI scans (server OpenRouter key). Free vs Premium.
+
+Free users can earn extra scans by watching a rewarded ad (POST /api/ai/reward), capped per day.
 
 New accounts get a WELCOME_DAYS boost so the first week shows the product working.
 """
@@ -15,6 +17,7 @@ from database import get_db
 
 FREE_DAILY = int(os.environ.get("AI_FREE_SCANS_PER_DAY", "3"))
 PREMIUM_DAILY = int(os.environ.get("AI_PREMIUM_SCANS_PER_DAY", "15"))
+MAX_REWARDS_PER_DAY = int(os.environ.get("AI_MAX_REWARDS_PER_DAY", "5"))
 WELCOME_DAILY = int(os.environ.get("AI_WELCOME_SCANS_PER_DAY", "8"))
 WELCOME_DAYS = int(os.environ.get("AI_WELCOME_DAYS", "7"))
 
@@ -47,7 +50,7 @@ async def _ensure_doc(db, user_id: str, day: str) -> None:
     await db.ai_usage.update_one(
         {"user_id": user_id, "date": day},
         {"$setOnInsert": {
-            "used": 0,
+            "used": 0, "bonus": 0, "rewards": 0,
             "expires_at": datetime.now(timezone.utc) + timedelta(days=3),
         }},
         upsert=True,
@@ -59,12 +62,13 @@ async def status(db, user_id: str, profile: dict | None) -> dict:
     await _ensure_doc(db, user_id, day)
     doc = await db.ai_usage.find_one({"user_id": user_id, "date": day})
     premium = await _premium(db, user_id)
-    limit = PREMIUM_DAILY if premium else _free_daily(profile)
+    limit = (PREMIUM_DAILY if premium else _free_daily(profile)) + doc["bonus"]
     return {
         "premium": premium,
         "limit": limit,
         "used": doc["used"],
         "remaining": max(limit - doc["used"], 0),
+        "rewards_left": max(MAX_REWARDS_PER_DAY - doc["rewards"], 0),
     }
 
 
@@ -74,7 +78,8 @@ async def consume(db, user_id: str, profile: dict | None) -> None:
     await _ensure_doc(db, user_id, day)
     base = PREMIUM_DAILY if await _premium(db, user_id) else _free_daily(profile)
     res = await db.ai_usage.update_one(
-        {"user_id": user_id, "date": day, "used": {"$lt": base}},
+        {"user_id": user_id, "date": day,
+         "$expr": {"$lt": ["$used", {"$add": [base, "$bonus"]}]}},
         {"$inc": {"used": 1}},
     )
     if res.modified_count == 0:
@@ -83,6 +88,7 @@ async def consume(db, user_id: str, profile: dict | None) -> None:
             "code": "ai_quota_exhausted",
             "message": "You've used today's free AI scans.",
             "limit": st["limit"],
+            "rewards_left": st["rewards_left"],
         })
 
 
@@ -92,6 +98,22 @@ async def refund(db, user_id: str, profile: dict | None) -> None:
         {"user_id": user_id, "date": _today(profile), "used": {"$gt": 0}},
         {"$inc": {"used": -1}},
     )
+
+
+async def grant_reward(db, user_id: str, profile: dict | None) -> dict:
+    # ponytail: trusts the client after a rewarded ad; per-day cap bounds abuse.
+    # Upgrade to AdMob server-side verification (SSV) if abuse shows up.
+    if await _premium(db, user_id):
+        raise HTTPException(400, "Premium has no ads — no bonus scans needed")
+    day = _today(profile)
+    await _ensure_doc(db, user_id, day)
+    res = await db.ai_usage.update_one(
+        {"user_id": user_id, "date": day, "rewards": {"$lt": MAX_REWARDS_PER_DAY}},
+        {"$inc": {"bonus": 1, "rewards": 1}},
+    )
+    if res.modified_count == 0:
+        raise HTTPException(429, "No more bonus scans available today")
+    return await status(db, user_id, profile)
 
 
 async def _take(user_id: str, count: bool):

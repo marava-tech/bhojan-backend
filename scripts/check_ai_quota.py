@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("JWT_SECRET", "test")
 os.environ.setdefault("AI_FREE_SCANS_PER_DAY", "3")
+os.environ.setdefault("AI_MAX_REWARDS_PER_DAY", "2")
 
 from fastapi import HTTPException  # noqa: E402
 
@@ -27,6 +28,16 @@ async def main():
 
     await ai_quota.refund(db, u, profile)
     await ai_quota.consume(db, u, profile)  # refunded slot is usable again
+
+    st = await ai_quota.grant_reward(db, u, profile)
+    assert st["remaining"] == 1 and st["limit"] == 4, st
+    await ai_quota.consume(db, u, profile)
+    await ai_quota.grant_reward(db, u, profile)
+    try:
+        await ai_quota.grant_reward(db, u, profile)
+        raise AssertionError("3rd reward should be blocked (cap 2)")
+    except HTTPException as e:
+        assert e.status_code == 429
 
     # welcome boost: account < 7 days old gets 8/day, older gets 3
     from datetime import datetime, timedelta, timezone
