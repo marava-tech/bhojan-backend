@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
@@ -11,3 +11,4 @@ class SavedFoodCreate(BaseModel):
     fat_g: float
     macro_source: str = "ai_estimated"
     image_url: Optional[str] = None
+    serving_label: Optional[str] = Field(default=None, max_length=30)  # what 1 saved portion is called: packet, glass, piece
