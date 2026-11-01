@@ -48,9 +48,14 @@ async def apply_event(db, event: dict) -> bool:
         expires_at = datetime.fromtimestamp(exp_ms / 1000, tz=timezone.utc)
     else:
         return False
+    ts = event.get("event_timestamp_ms")
+    prev = await db.entitlements.find_one({"user_id": user_id}, {"last_event_ms": 1})
+    if ts and prev and (prev.get("last_event_ms") or 0) > ts:
+        return False  # a late, older event must not undo a newer one (e.g. INITIAL_PURCHASE after RENEWAL)
     await db.entitlements.update_one(
         {"user_id": user_id},
         {"$set": {
+            "last_event_ms": ts or 0,
             "expires_at": expires_at,
             "product_id": event.get("product_id"),
             "last_event": kind,

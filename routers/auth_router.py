@@ -3,9 +3,10 @@ import hmac
 import os
 import random
 import string
+import time
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pymongo import ReturnDocument
 from bson import ObjectId
 
@@ -22,8 +23,9 @@ _OTP_LOCKOUT_MINUTES = 15
 
 # Play Store reviewer login — accepts a fixed OTP so review can proceed without
 # needing to receive a real email. No other account gets this bypass.
-_REVIEWER_EMAIL = "kinnerapavankalyan7@gmail.com"
-_REVIEWER_OTP = "000000"
+# Set REVIEWER_OTP to a secret in .env (and give it to Play Console) so the code is not a public constant.
+_REVIEWER_EMAIL = os.environ.get("REVIEWER_EMAIL", "kinnerapavankalyan7@gmail.com").lower()
+_REVIEWER_OTP = os.environ.get("REVIEWER_OTP", "000000")
 
 
 def _generate_otp() -> str:
@@ -53,11 +55,31 @@ def _hash_otp(email: str, otp: str) -> str:
 _OTP_RESEND_COOLDOWN_SECONDS = 60
 
 
+_OTP_PER_IP_HOUR = 10
+_otp_hits: dict[str, list[float]] = {}
+
+
+def _ip_limited(request: Request) -> bool:
+    """Per client IP, so one device can't trigger OTP emails to many addresses. In memory: a restart resets it."""
+    ip = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
+    now = time.monotonic()
+    hits = [t for t in _otp_hits.get(ip, []) if now - t < 3600]
+    if len(hits) >= _OTP_PER_IP_HOUR:
+        _otp_hits[ip] = hits
+        return True
+    _otp_hits[ip] = hits + [now]
+    if len(_otp_hits) > 5000:
+        _otp_hits.clear()
+    return False
+
+
 @router.post("/send-otp", status_code=200)
-async def send_otp(body: SendOtpRequest):
+async def send_otp(body: SendOtpRequest, request: Request):
     """Send OTP to email. Creates user if first time."""
     db = get_db()
     email = body.email.lower()
+    if _ip_limited(request):
+        raise HTTPException(status_code=429, detail="Too many code requests from this device — try again in an hour")
 
     if email == _REVIEWER_EMAIL:
         return {"message": "OTP sent"}
@@ -98,7 +120,7 @@ async def verify_otp(body: VerifyOtpRequest):
     otp = body.otp.strip()
 
     if email == _REVIEWER_EMAIL:
-        if otp != _REVIEWER_OTP:
+        if not hmac.compare_digest(otp, _REVIEWER_OTP):
             raise HTTPException(status_code=400, detail="Invalid OTP")
     else:
         # Count the guess first, atomically, so parallel requests can't beat the cap.
