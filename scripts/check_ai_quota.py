@@ -73,9 +73,13 @@ async def main():
 
     await run_gate(ai_quota.scan_gate("u3"), fail=True)
     assert (await ai_quota.status(db, "u3", None))["used"] == 0, "failed scan must be refunded"
-    await run_gate(ai_quota.photo_scan_gate(model="gpt-4o", user_id="u3"), fail=False)
+    await db.scan_results.insert_one({"user_id": "u3", "image_url": "http://x/u3.jpg"})
+    await run_gate(ai_quota.photo_scan_gate(model="gpt-4o", image_url="http://x/u3.jpg", user_id="u3"), fail=False)
     assert (await ai_quota.status(db, "u3", None))["used"] == 0, "retry must be free"
-    await run_gate(ai_quota.photo_scan_gate(model=None, user_id="u3"), fail=False)
+    await run_gate(ai_quota.photo_scan_gate(model="gpt-4o", image_url="http://x/other.jpg", user_id="u3"), fail=False)
+    assert (await ai_quota.status(db, "u3", None))["used"] == 1, "a made-up retry must count"
+    await ai_quota.refund(db, "u3", None)
+    await run_gate(ai_quota.photo_scan_gate(model=None, image_url=None, user_id="u3"), fail=False)
     assert (await ai_quota.status(db, "u3", None))["used"] == 1
     print("ai_quota OK")
 

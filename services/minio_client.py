@@ -43,7 +43,8 @@ async def delete_image(url: str) -> None:
     """Best-effort delete of an object by its public URL (<host>/<bucket>/<key>). Never raises."""
     try:
         bucket, _, key = urlparse(url).path.lstrip("/").partition("/")
-        if not key:
+        # image_url is client-supplied: never delete outside this app's own bucket (the MinIO is shared).
+        if bucket != BUCKET or not key:
             return
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.request(

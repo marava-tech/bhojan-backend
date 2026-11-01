@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/billing", tags=["billing"])
 async def revenuecat_webhook(body: dict, authorization: str | None = Header(None)):
     """Set the same value as REVENUECAT_WEBHOOK_AUTH in RevenueCat → Webhooks → Authorization header."""
     secret = os.environ.get("REVENUECAT_WEBHOOK_AUTH", "")
-    if not secret or not hmac.compare_digest(authorization or "", secret):
+    if not secret or not hmac.compare_digest((authorization or "").encode(), secret.encode()):
         raise HTTPException(401, "Unauthorized")
     changed = await entitlements.apply_event(get_db(), body.get("event") or {})
     return {"ok": True, "changed": changed}

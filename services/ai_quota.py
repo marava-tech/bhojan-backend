@@ -4,6 +4,7 @@ Free users can earn extra scans by watching a rewarded ad (POST /api/ai/reward),
 
 Users can opt in to a TRIAL_DAYS Premium trial once (POST /api/ai/trial); it is never automatic.
 """
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -37,8 +38,24 @@ async def trial_ends_at(db, user_id: str) -> datetime | None:
     return end if end > datetime.now(timezone.utc) else None
 
 
+def _email_key(email: str) -> str:
+    return hashlib.sha256(email.strip().lower().encode()).hexdigest()
+
+
+async def remember_trial_used(db, user: dict) -> None:
+    """Called when an account is deleted: keeps only a hash of the email, so the trial stays one per person."""
+    if user.get("trial_started_at") and user.get("email"):
+        await db.trial_used.update_one({"_id": _email_key(user["email"])}, {"$set": {"at": datetime.now(timezone.utc)}}, upsert=True)
+
+
+async def _trial_burned(db, user: dict | None) -> bool:
+    return bool(user and user.get("email") and await db.trial_used.find_one({"_id": _email_key(user["email"])}, {"_id": 1}))
+
+
 async def start_trial(db, user_id: str) -> None:
-    """Idempotent: a second call (or a reinstall) never restarts the clock."""
+    """Idempotent: a second call (or a reinstall, or delete + sign up again) never restarts the clock."""
+    if await _trial_burned(db, await db.users.find_one({"_id": ObjectId(user_id)}, {"email": 1})):
+        return
     await db.users.update_one(
         {"_id": ObjectId(user_id), "trial_started_at": {"$exists": False}},
         {"$set": {"trial_started_at": datetime.now(timezone.utc)}},
@@ -47,10 +64,10 @@ async def start_trial(db, user_id: str) -> None:
 
 async def trial_available(db, user_id: str) -> bool:
     try:
-        u = await db.users.find_one({"_id": ObjectId(user_id)}, {"trial_started_at": 1})
+        u = await db.users.find_one({"_id": ObjectId(user_id)}, {"trial_started_at": 1, "email": 1})
     except InvalidId:
         return False
-    return bool(u) and not u.get("trial_started_at")
+    return bool(u) and not u.get("trial_started_at") and not await _trial_burned(db, u)
 
 
 async def _premium(db, user_id: str) -> bool:
@@ -161,10 +178,15 @@ async def scan_gate(user_id: str = Depends(get_current_user)):
 
 async def photo_scan_gate(
     model: Optional[str] = Form(None),
+    image_url: Optional[str] = Form(None),
     user_id: str = Depends(get_current_user),
 ):
-    # A retry with a different model re-scans the same photo, so it's free.
-    count = not model
+    # A retry with a different model re-scans the same photo, so it's free, but only when it is
+    # a real retry: a known model AND an image this user already scanned. Anything else counts.
+    from services.gemini import RETRY_VISION_MODELS
+    count = True
+    if model in RETRY_VISION_MODELS and image_url:
+        count = await get_db().scan_results.find_one({"user_id": user_id, "image_url": image_url}, {"_id": 1}) is None
     db, profile = await _take(user_id, count)
     try:
         yield

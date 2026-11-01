@@ -5,9 +5,9 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from auth import get_current_user
+from auth import get_current_user, forget_user
 from database import get_db
-from services import minio_client
+from services import ai_quota, minio_client
 from services import data_export
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ _USER_COLLECTIONS = (
     "user_profile", "food_logs", "saved_foods", "saved_meals", "supplements", "supplement_logs",
     "sleep_logs", "weight_photos", "body_photos", "body_photo_comparisons", "gym_sessions",
     "if_logs", "daily_checkins", "ai_usage", "food_corrections", "weekly_insights",
-    "scan_results", "goal_history", "entitlements", "data_exports",
+    "scan_results", "goal_history", "entitlements", "data_exports", "feature_usage",
 )
 # Collections whose docs hold uploaded image URLs (image_url, or photo_url on the profile).
 _IMAGE_COLLECTIONS = (
@@ -63,10 +63,12 @@ async def delete_account(body: DeleteAccount, user_id: str = Depends(get_current
     for name in _IMAGE_COLLECTIONS:
         async for d in db[name].find({"user_id": user_id}, {"image_url": 1, "photo_url": 1}):
             urls.update(u for u in (d.get("image_url"), d.get("photo_url")) if u)
+    await ai_quota.remember_trial_used(db, user)  # before the user row goes
     for name in _USER_COLLECTIONS:
         await db[name].delete_many({"user_id": user_id})
     await db.otp_requests.delete_many({"email": user["email"]})
     await db.users.delete_one({"_id": user["_id"]})
+    forget_user(user_id)
     for url in urls:
         await minio_client.delete_image(url)
     logger.info("Account %s deleted", user_id)
