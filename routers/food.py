@@ -268,9 +268,12 @@ async def analyze_food(
 
     # Only upload to MinIO on the first pass — a retry with a different model reuses
     # the image_url from the original analysis instead of storing a duplicate copy.
+    thumb_task = None
     if not image_url:
-        filename = f"{uuid.uuid4()}.jpg"
-        image_url = await minio_client.upload_image(image_bytes, minio_client.BUCKET_FOOD, filename)
+        stem = str(uuid.uuid4())
+        image_url = await minio_client.upload_image(image_bytes, minio_client.BUCKET_FOOD, f"{stem}.jpg")
+        # runs while the model works; awaited before the response
+        thumb_task = asyncio.create_task(minio_client.upload_thumbnail(image_bytes, minio_client.BUCKET_FOOD, f"{stem}_t.jpg"))
 
     retry_model = gemini_svc.RETRY_VISION_MODELS.get(model) if model else None
 
@@ -318,6 +321,7 @@ async def analyze_food(
         "items": enriched_items,
         "scale_weight_g": scale_weight_g,
         "image_url": image_url,
+        "thumb_url": await thumb_task if thumb_task else None,
         "meal_suggestion": meal_suggestion,
     }
 
@@ -570,6 +574,7 @@ async def create_food_log(body: FoodLogCreate, background_tasks: BackgroundTasks
         "source_type": body.source_type.value if body.source_type else None,
         "items": resolved_items,
         "image_url": body.image_url,
+        "thumb_url": body.thumb_url,
         "note": body.note,
         "totals": {
             "calories_kcal": round(total_cal, 1),
