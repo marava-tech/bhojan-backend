@@ -16,6 +16,11 @@ _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "google/gemini-2.5-flash")
 _TEXT_MODEL = os.environ.get("OPENROUTER_TEXT_MODEL", "google/gemini-2.5-flash")
 
+# Cap on the model's hidden "thinking" tokens per call (0 = no cap, provider default). Thinking is most of a scan's
+# cost (.product/ECONOMICS.md in the app repo), but a cap can change estimates: set it only after
+# `python -m scripts.eval_accuracy` passes with it, e.g. AI_REASONING_MAX_TOKENS=500.
+_REASONING_MAX = int(os.environ.get("AI_REASONING_MAX_TOKENS", "0"))
+
 # Alternate vision models offered to the user via "retry with different model"
 RETRY_VISION_MODELS = {
     "gpt-4o": "openai/gpt-4o",
@@ -55,6 +60,8 @@ async def _chat(model: str, messages: list[dict], api_key: str, system: str | No
         payload["messages"] = [{"role": "system", "content": system}] + messages
     if max_tokens:
         payload["max_tokens"] = max_tokens
+    if _REASONING_MAX:
+        payload["reasoning"] = {"max_tokens": _REASONING_MAX}
     server_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(_OPENROUTER_URL, headers=headers, json=payload)

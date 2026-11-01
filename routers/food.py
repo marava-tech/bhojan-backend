@@ -746,6 +746,33 @@ async def get_food_logs(date: str, user_id: str = Depends(get_current_user)):
     }
 
 
+@router.get("/recent")
+async def get_recent_meals(days: int = 3, limit: int = 6, user_id: str = Depends(get_current_user)):
+    """Distinct meals (same item names count as one) from the last `days` days, newest first.
+    One query instead of the app asking for each day in turn."""
+    days, limit = max(1, min(days, 14)), max(1, min(limit, 50))
+    db = get_db()
+    profile = await db.user_profile.find_one({"user_id": user_id})
+    try:
+        user_tz = ZoneInfo((profile or {}).get("user_timezone", "UTC"))
+    except ZoneInfoNotFoundError:
+        user_tz = ZoneInfo("UTC")
+    start = (datetime.now(user_tz).date() - timedelta(days=days - 1)).isoformat()
+    cursor = db.food_logs.find(
+        {"user_id": user_id, "date": {"$gte": start}, "meal_slot": {"$ne": "supplement"}}
+    ).sort("created_at", -1).limit(limit * 10)  # ponytail: repeats are dropped below, so read a few extra
+    seen, meals = set(), []
+    async for doc in cursor:
+        key = "|".join(str(i.get("name", "")).lower() for i in doc.get("items", []))
+        if key and key not in seen:
+            seen.add(key)
+            doc["_id"] = str(doc["_id"])
+            meals.append(doc)
+            if len(meals) == limit:
+                break
+    return {"meals": meals}
+
+
 @router.get("/daily-totals")
 async def get_daily_totals(days: int = 30, user_id: str = Depends(get_current_user)):
     """Returns daily aggregated calories, protein, carbs, and fat for the past N days."""
