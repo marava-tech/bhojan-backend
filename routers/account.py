@@ -61,8 +61,8 @@ async def delete_account(body: DeleteAccount, user_id: str = Depends(get_current
     # Collect uploaded image URLs before the docs go. Extra "image_url" holders (saved foods, scans) point at the same files.
     urls = set()
     for name in _IMAGE_COLLECTIONS:
-        async for d in db[name].find({"user_id": user_id}, {"image_url": 1, "photo_url": 1}):
-            urls.update(u for u in (d.get("image_url"), d.get("photo_url")) if u)
+        async for d in db[name].find({"user_id": user_id}, {"image_url": 1, "photo_url": 1, "thumb_url": 1}):
+            urls.update(u for u in (d.get("image_url"), d.get("photo_url"), d.get("thumb_url")) if u)
     await ai_quota.remember_trial_used(db, user)  # before the user row goes
     for name in _USER_COLLECTIONS:
         await db[name].delete_many({"user_id": user_id})

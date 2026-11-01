@@ -1,4 +1,5 @@
 """Image upload via s3.marava.tech."""
+import asyncio
 import io
 import logging
 import os
@@ -37,6 +38,25 @@ async def upload_image(image_bytes: bytes, bucket: str, filename: str) -> str:
         )
         resp.raise_for_status()
         return resp.json()["url"]
+
+
+def _thumb_bytes(image_bytes: bytes, px: int = 360) -> bytes:
+    from PIL import Image, ImageOps  # imported here so a missing Pillow only costs the thumbnail, never a scan
+
+    im = ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes)))
+    im.thumbnail((px, px))
+    out = io.BytesIO()
+    im.convert("RGB").save(out, "JPEG", quality=72, optimize=True)
+    return out.getvalue()
+
+
+async def upload_thumbnail(image_bytes: bytes, bucket: str, filename: str) -> str | None:
+    """Small JPEG copy for list rows (a row shows ~50 px, the original is up to 2048 px). None if anything fails."""
+    try:
+        return await upload_image(await asyncio.to_thread(_thumb_bytes, image_bytes), bucket, filename)
+    except Exception:
+        logger.warning("Could not make a thumbnail", exc_info=True)
+        return None
 
 
 async def delete_image(url: str) -> None:

@@ -63,6 +63,7 @@ class FoodLogCreate(BaseModel):
     meal_slot: MealSlot
     items: List[FoodItem]
     image_url: Optional[str] = None
+    thumb_url: Optional[str] = None  # small copy of image_url for list rows
     note: Optional[str] = None
     source_type: Optional[SourceType] = None
     # Calendar day (YYYY-MM-DD) the entry should be logged under, e.g. when the
