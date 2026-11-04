@@ -46,6 +46,7 @@ async def main():
     assert not await entitlements.apply_event(db, ev("RENEWAL", user="$RCAnonymousID:abc")["event"])
     assert not await entitlements.apply_event(db, ev("RENEWAL", user="u9", entitlement_ids=["other"])["event"])
     assert not await entitlements.apply_event(db, {"type": "TEST", "app_user_id": "u9"})
+    assert not await entitlements.apply_event(db, {**ev("INITIAL_PURCHASE", user="u9")["event"], "environment": "SANDBOX"})
     assert not await entitlements.is_premium(db, "u9")
 
     # premium quota tier: 5/day (not 3)
