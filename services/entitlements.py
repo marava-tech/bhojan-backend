@@ -34,6 +34,8 @@ async def is_premium(db, user_id: str) -> bool:
 
 async def apply_event(db, event: dict) -> bool:
     """Apply one RevenueCat event. Returns True if it changed an entitlement."""
+    if event.get("environment") == "SANDBOX":
+        return False  # Play license-tester / test-card purchases are free; never grant Premium for them
     user_id = event.get("app_user_id") or ""
     if not user_id or user_id.startswith("$RCAnonymousID"):
         return False  # purchase made before the app logged in — RevenueCat re-sends after logIn
