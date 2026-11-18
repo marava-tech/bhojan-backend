@@ -3,7 +3,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import HTTPException, Depends, status
+from fastapi import HTTPException, Depends, Response, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -56,6 +56,7 @@ async def _require_user(user_id: str) -> None:
 
 
 async def get_current_user(
+    response: Response,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> str:
     if credentials is None:
@@ -68,4 +69,8 @@ async def get_current_user(
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     await _require_user(user_id)
+    # Sliding session: past half its life, hand back a fresh token so anyone who opens the
+    # app at least once per half-lifetime is never signed out. The app saves this header.
+    if payload.get("exp", 0) - time.time() < _expiration_s / 2:
+        response.headers["X-Refreshed-Token"] = create_access_token(user_id)
     return user_id
