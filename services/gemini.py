@@ -34,6 +34,12 @@ def _img_url(image_bytes: bytes, mime: str = "image/jpeg") -> str:
 
 
 def _parse_json(text: str | None) -> dict:
+    data = _parse_json_any(text)
+    # The model sometimes drops the {"items": ...} wrapper and replies with the bare list.
+    return {"items": data} if isinstance(data, list) else data
+
+
+def _parse_json_any(text: str | None):
     if not text:
         raise ValueError("LLM returned an empty response")
     text = text.strip()
